@@ -1,9 +1,12 @@
 /**/.idea
+/frontend/dist/
 /frontend/node_modules/
 /ai-backend/**/db
 /ai-backend/.env
 /ai-backend/test_doc.md
 /ai-backend/CLAUDE.md
 /ai-backend/anser.txt
-ai-backend/common/logs/
-/frontend/dist/
+/ai-backend/common/logs/
+/ai-backend/**/__pycache__/
+/ai-backend/Dockerfile
+/ai-backend/docker-compose.yml

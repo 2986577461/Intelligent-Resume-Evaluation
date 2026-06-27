@@ -12,13 +12,9 @@ const { observe } = useScrollReveal();
 
 onMounted(async () => {
   if (localStorage.getItem("authorization")) {
-    try {
-      const resp = await getThis();
-      if (resp.code === "200") {
-        userStore.setUser(resp.data);
-      }
-    } catch (e) {
-      // ignore
+    const resp = await getThis();
+    if (resp.code === "200") {
+      userStore.setUser(resp.data);
     }
   }
 

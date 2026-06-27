@@ -1,9 +1,9 @@
-import axiosInstance from "./axiosInit.js";
+import { axiosResumeInstance } from "./axiosInit.js";
 
-export const getConversations = () => axiosInstance.get("/api/conversations");
+export const getConversations = () => axiosResumeInstance.get("/api/conversations");
 
 export const getMessages = (threadId) =>
-  axiosInstance.get(`/api/conversations/${threadId}/messages`);
+  axiosResumeInstance.get(`/api/conversations/${threadId}/messages`);
 
 export const deleteConversation = (threadId) =>
-  axiosInstance.delete(`/api/conversations/${threadId}`);
+  axiosResumeInstance.delete(`/api/conversations/${threadId}`);

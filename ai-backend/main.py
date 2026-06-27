@@ -21,7 +21,6 @@ from agent.router import agent_router
 from files.router import files_router
 
 
-
 model = init_chat_model(model="deepseek-v4-flash")
 
 web_search = TavilySearch(
@@ -39,7 +38,6 @@ app = FastAPI(
 app.include_router(conversation_router)
 app.include_router(agent_router)
 app.include_router(files_router)
-
 
 app.add_middleware(
     CORSMiddleware,

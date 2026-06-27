@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from common.logger import get_agent_logger
+from agent.sse import SSE, sse_escape
 
 DB_DIR = os.path.join(os.path.dirname(__file__), "db")
 DB_PATH = os.path.join(DB_DIR, "conversations.db")
@@ -23,29 +24,7 @@ def load_system_prompt() -> str:
         with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return "你是一个协会网站的智能客服助手。"
-
-
-# SSE 信号常量
-class SSE:
-    DONE = "[DONE]"
-    ERROR = "[ERROR]"
-    GENERATING = "generating"
-    THINKING = "thinking"
-
-    @staticmethod
-    def state(**kw) -> str:
-        return "[STATE]" + json.dumps(kw, ensure_ascii=False)
-
-
-_TOOL_STATES = {
-    "tavily": ("searching_web", True)
-}
-_TOOL_SEARCH_KEYS = { "tavily"}
-
-
-def _sse_escape(text: str) -> str:
-    return text.replace("\n", "\\n")
+        return "你是智能简历评估助手"
 
 
 def _format_search_results(tool_content: str) -> str:
@@ -89,14 +68,16 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                       file_id: str = ""):
     """SSE 流式生成器。model 和 tools 由 main.py 传入。"""
     from conversation.service import (ensure_conversation_and_save_user, save_ai_message,
-                                       generate_and_save_title, save_message_attachment)
+                                       generate_and_save_title, save_message_attachment,
+                                       update_file_thread_id)
 
     thread_id, user_msg_id = ensure_conversation_and_save_user(thread_id, question, user_id)
     if file_id:
-        from files.store import get_user_file
-        _fe = get_user_file(user_id)
-        if _fe:
-            save_message_attachment(user_msg_id, _fe["file_id"], _fe["name"])
+        from conversation.service import get_file_content
+        _content = get_file_content(file_id)
+        if _content:
+            save_message_attachment(user_msg_id, file_id, "resume.pdf")
+            update_file_thread_id(file_id, thread_id)
     alog = get_agent_logger()
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -116,7 +97,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                 system_prompt=load_system_prompt(),
             )
             config: RunnableConfig = {
-                "configurable": {"thread_id": f"{user_id}:{thread_id}", "token": token, "user_id": user_id,"file_id":file_id}}
+                "configurable": {"thread_id": thread_id, "token": token, "user_id": user_id, "file_id": file_id}}
             step = 0
             searching_sent = False
             gen_sent = False
@@ -149,17 +130,14 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                                 name = tc.get("name") or ""
                             else:
                                 name = getattr(tc, "name", "") or ""
-                            if name:
+                            if name and name != current_tool_name:
                                 current_tool_name = name
-                        step += 1
-                        _lower = current_tool_name.lower()
-                        for _kw, (_st, _) in _TOOL_STATES.items():
-                            if _kw in _lower:
-                                searching_sent = True
-                                search_info["split_pos"] = len("".join(ai_reply_chunks))
-                                loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=_st))
-                                alog.info(step, _st, "调用工具", {"tool": current_tool_name})
-                                break
+                                step += 1
+                                alog.info(step, "tool_call", "调用工具", {"tool": current_tool_name})
+                        if "tavily" in current_tool_name.lower():
+                            searching_sent = True
+                            search_info["split_pos"] = len("".join(ai_reply_chunks))
+                            loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state="searching_web"))
                     if chunk.content and not chunk.tool_calls and not chunk.tool_call_chunks:
                         ai_reply_chunks.append(chunk.content)
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata.get('token_usage'):
@@ -169,7 +147,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=SSE.GENERATING))
                         loop.call_soon_threadsafe(queue.put_nowait, chunk.content)
                 elif isinstance(chunk, ToolMessage):
-                    _is_search_tool = any(k in current_tool_name.lower() for k in _TOOL_SEARCH_KEYS)
+                    _is_search_tool = "tavily" in current_tool_name.lower()
                     current_tool_name = ""
                     if not _is_search_tool:
                         step += 1
@@ -218,4 +196,4 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         if str(data).startswith("[ERROR]"):
             yield f"data: {data}\n\n"
             break
-        yield f"data: {_sse_escape(data)}\n\n"
+        yield f"data: {sse_escape(data)}\n\n"

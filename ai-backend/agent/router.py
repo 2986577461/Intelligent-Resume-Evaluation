@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from conversation.service import get_current_user
 from agent.service import stream_chat
-from agent.tools import get_current_time, get_user_identity, parse_resume_pdf
+from agent.tools import get_current_time, get_user_identity, list_resumes, parse_resume_by_index, analyze_resume
 
 agent_router = APIRouter()
 
@@ -20,7 +20,9 @@ async def chat_stream(question: str, thread_id: str = "default",
         stream_chat(question, thread_id, user_id, token, file_id=file_id,
                     model=model,
                     tools=[get_current_time, web_search,
-                           get_user_identity, parse_resume_pdf]),
+                           get_user_identity,
+                           list_resumes, parse_resume_by_index,
+                           analyze_resume]),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

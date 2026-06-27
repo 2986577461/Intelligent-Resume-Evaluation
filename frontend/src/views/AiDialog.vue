@@ -288,7 +288,11 @@
     </button>
 
     <!-- PDF Preview Modal -->
-    <div v-if="previewFileUrl" class="preview-overlay" @click.self="closePreview">
+    <div
+      v-if="previewFileUrl"
+      class="preview-overlay"
+      @click.self="closePreview"
+    >
       <div class="preview-modal">
         <div class="preview-header">
           <span class="preview-title">{{ previewFileName }}</span>
@@ -312,7 +316,7 @@ import {
 } from "@/request/axiosForAi.js";
 import { uploadFile } from "@/request/axiosForFiles.js";
 
-const CHAT_STREAM_URL = "/chat-stream";
+const CHAT_STREAM_URL = "/resume/chat-stream";
 
 const userStore = useUserStore();
 const question = ref("");
@@ -449,7 +453,7 @@ async function uploadPdf(file) {
   }
   pendingFile.value = { name: file.name, fileId: "", uploading: true };
   try {
-    const res = await uploadFile(file);
+    const res = await uploadFile(file, currentThreadId.value);
     pendingFile.value.fileId = res.file_id;
     toastMsg.value = `已上传：${res.filename}`;
     toastVisible.value = true;
@@ -472,7 +476,7 @@ const previewFileName = ref("");
 function openFile(fileId, fileName) {
   previewFileName.value = fileName;
   const token = localStorage.getItem("authorization") || "";
-  fetch(`/api/files/${fileId}`, { headers: { Authorization: token } })
+  fetch(`/resume/api/files/${fileId}`, { headers: { Authorization: token } })
     .then((res) => {
       if (!res.ok) throw new Error();
       return res.blob();
@@ -634,6 +638,8 @@ async function send() {
           if (state.results) {
             msg.webResults = state.results;
           }
+        } else if (state.state === "analyzing" || state.state === "scoring") {
+          msg.searching = false;
         }
       } catch {}
     } else {
@@ -883,7 +889,7 @@ onUnmounted(() => {
   background: var(--user-bubble);
   border-radius: 18px;
   padding: 10px 16px;
-  max-width: 90%;
+  min-width: 90%;
   font-size: 20px;
   line-height: 1.6;
 }

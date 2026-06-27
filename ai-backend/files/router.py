@@ -4,14 +4,11 @@ import re
 import uuid
 from io import BytesIO
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from fastapi.responses import Response
 from pypdf import PdfReader
 
-from files.store import set_user_file
 from conversation.service import get_current_user, save_file_meta, get_file_content
-from kb.tools import _chunk_text
-from common.vector_store import get_vector_store
 
 files_router = APIRouter(prefix="/api/files", tags=["文件管理"])
 
@@ -28,6 +25,7 @@ def _clean_pdf_text(text: str) -> str:
 
 @files_router.post("/upload", summary="上传 PDF 文件")
 async def upload_file(file: UploadFile = File(...),
+                      thread_id: str =Form(default=""),
                       user_id: str = Depends(get_current_user)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "仅支持 PDF 文件")
@@ -48,25 +46,13 @@ async def upload_file(file: UploadFile = File(...),
 
     file_id = uuid.uuid4().hex[:12]
 
-    # 1. 内存：最新文件给 agent tool 用
-    set_user_file(user_id, file_id, file.filename, text)
-
-    # 2. SQLite：持久化文件元数据 + 原始内容
-    chunks = _chunk_text(text, chunk_size=400, overlap=60)
-    save_file_meta(file_id, file.filename, len(text), len(chunks), user_id, content=raw)
-
-    # 3. Milvus：向量化（失败不影响上传）
-    try:
-        doc_id = int(file_id, 16) % (2**63)
-        get_vector_store().insert_chunks(doc_id, chunks, user_id)
-    except Exception:
-        pass
+    save_file_meta(file_id, file.filename, len(text),thread_id, user_id, content=raw)
 
     return {"file_id": file_id, "filename": file.filename}
 
 
 @files_router.get("/{file_id}", summary="获取文件原始内容")
-def get_file(file_id: str, user_id: str = Depends(get_current_user)):
+def get_file(file_id: str):
     content = get_file_content(file_id)
     if content is None:
         raise HTTPException(404, "文件不存在")
