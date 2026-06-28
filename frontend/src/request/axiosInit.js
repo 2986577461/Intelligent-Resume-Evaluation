@@ -1,16 +1,15 @@
 import axios from "axios";
 import { ElMessage } from "element-plus";
 
-let toastTimer = null;
 function showOnce(msg) {
   ElMessage.closeAll();
   ElMessage.error(msg);
 }
 
-// 生产：空 baseURL，请求走同域 Nginx 路由
-// 开发：空 baseURL，请求走 Vite proxy（vite.config.js）
-//    /user/* /admin/* → localhost:8080 (Java)
-//    /api/* /chat-stream → localhost:8000 (Python)
+// 生产 → /resume 前缀让 nginx 路由到 resume-backend
+// 开发 → 空，走 Vite proxy（vite.config.js）
+export const RESUME_PREFIX = import.meta.env.PROD ? "/resume" : "";
+
 const axiosInstance = axios.create({
   baseURL: "",
   timeout: 60000,
@@ -18,9 +17,8 @@ const axiosInstance = axios.create({
   withCredentials: true,
 });
 
-// 带 /resume 前缀的实例（用于简历评估项目前端）
 const axiosResumeInstance = axios.create({
-  baseURL: "/resume",
+  baseURL: RESUME_PREFIX,
   timeout: 60000,
   headers: { "Content-Type": "application/json" },
   withCredentials: true,

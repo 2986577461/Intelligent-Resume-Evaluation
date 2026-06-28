@@ -221,6 +221,17 @@ def save_file_meta(file_id: str, filename: str, char_count: int,thread_id:str,
         conn.close()
 
 
+def get_filename(file_id: str) -> str | None:
+    conn = get_app_db()
+    try:
+        row = conn.execute(
+            "SELECT filename FROM uploaded_files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        return row["filename"] if row else None
+    finally:
+        conn.close()
+
+
 def get_file_content(file_id: str) -> bytes | None:
     conn = get_app_db()
     try:

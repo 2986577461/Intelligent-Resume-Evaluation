@@ -49,6 +49,7 @@ def _format_search_results(tool_content: str) -> str:
         return json.dumps({"results": results}, ensure_ascii=False)
     return json.dumps({"results": []})
 
+
 def _parse_web_results(raw: str, info: dict):
     try:
         parsed = json.loads(raw) if raw.startswith("{") else None
@@ -68,16 +69,17 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                       file_id: str = ""):
     """SSE 流式生成器。model 和 tools 由 main.py 传入。"""
     from conversation.service import (ensure_conversation_and_save_user, save_ai_message,
-                                       generate_and_save_title, save_message_attachment,
-                                       update_file_thread_id)
-
+                                      generate_and_save_title, save_message_attachment)
     thread_id, user_msg_id = ensure_conversation_and_save_user(thread_id, question, user_id)
+    # 用户上传的消息附带文件时，则绑定此消息
+    current_question= {"question": question}
+
     if file_id:
-        from conversation.service import get_file_content
-        _content = get_file_content(file_id)
-        if _content:
-            save_message_attachment(user_msg_id, file_id, "resume.pdf")
-            update_file_thread_id(file_id, thread_id)
+        from conversation.service import get_filename
+        filename = get_filename(file_id)
+        if filename:
+            save_message_attachment(user_msg_id, file_id, filename)
+            current_question.update({"file_id":file_id,"filename":filename})
     alog = get_agent_logger()
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -89,24 +91,25 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         nonlocal ai_reply_chunks
         checkpointer_ctx = SqliteSaver.from_conn_string(DB_PATH)
         checkpointer = checkpointer_ctx.__enter__()
-        try:
-            agent = create_agent(
-                model=model,
-                tools=tools or [],
-                checkpointer=checkpointer,
-                system_prompt=load_system_prompt(),
-            )
-            config: RunnableConfig = {
-                "configurable": {"thread_id": thread_id, "token": token, "user_id": user_id, "file_id": file_id}}
-            step = 0
-            searching_sent = False
-            gen_sent = False
-            current_tool_name = ""
-            _thinking = []
-            _last_meta = {}
 
+        agent = create_agent(
+            model=model,
+            tools=tools or [],
+            checkpointer=checkpointer,
+            system_prompt=load_system_prompt(),
+        )
+        config: RunnableConfig = {
+            "configurable": {"thread_id": thread_id, "token": token, "user_id": user_id, "file_id": file_id}}
+        step = 0
+        alog.info(step, "user_asking", "用户提问", question)
+        step += 1
+
+        current_tool_name = ""
+        _thinking = []
+        _last_meta = {}
+        try:
             for chunk, metadata in agent.stream(
-                    {"messages": [{"role": "user", "content": question}]},
+                    {"messages": [{"role": "user", "content": str(current_question)}]},
                     config=config,
                     stream_mode="messages"):
                 if hasattr(chunk, 'usage_metadata') and chunk.usage_metadata:
@@ -119,11 +122,11 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         _thinking.append(_rc)
                     # 如果停止了输出推理并且有推理日志
                     elif _thinking:
-                        _full = "".join(_thinking)
-                        alog.info(step, "model_thinking", "模型推理", {"think": _full[:500]})
+                        alog.info(step, "model_thinking", "模型推理", "".join(_thinking))
+                        step += 1
                         _thinking.clear()
                     # agent想要调用tool
-                    if (chunk.tool_calls or chunk.tool_call_chunks) and not searching_sent:
+                    if chunk.tool_calls or chunk.tool_call_chunks:
                         if chunk.tool_call_chunks:
                             tc = chunk.tool_call_chunks[0]
                             if isinstance(tc, dict):
@@ -132,42 +135,47 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                                 name = getattr(tc, "name", "") or ""
                             if name and name != current_tool_name:
                                 current_tool_name = name
+                                alog.info(step, "tool_call", "调用工具", current_tool_name)
                                 step += 1
-                                alog.info(step, "tool_call", "调用工具", {"tool": current_tool_name})
-                        if "tavily" in current_tool_name.lower():
-                            searching_sent = True
-                            search_info["split_pos"] = len("".join(ai_reply_chunks))
-                            loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state="searching_web"))
+
+                                tool_info = SSE.match_tool(name)
+                                if tool_info:
+                                    loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=tool_info["calling"]))
+
                     if chunk.content and not chunk.tool_calls and not chunk.tool_call_chunks:
                         ai_reply_chunks.append(chunk.content)
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata.get('token_usage'):
                             _last_meta = chunk.response_metadata
-                        if not gen_sent:
-                            gen_sent = True
-                            loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=SSE.GENERATING))
                         loop.call_soon_threadsafe(queue.put_nowait, chunk.content)
+                # tool调用完毕
                 elif isinstance(chunk, ToolMessage):
-                    _is_search_tool = "tavily" in current_tool_name.lower()
+                    tool_info = SSE.match_tool(current_tool_name)
+                    _saved_tool_name = current_tool_name
                     current_tool_name = ""
-                    if not _is_search_tool:
+
+                    if tool_info:
+                        state_data = {"state": tool_info["done"]}
+                        if tool_info["done"] == "search_done":
+                            raw = str(chunk.content)
+                            _parse_web_results(raw, search_info)
+                            results_json = _format_search_results(chunk.content)
+                            parsed = json.loads(results_json)
+                            state_data["results"] = parsed.get("results", [])
+
+                        # 持久化 tool 完成状态 + 位置
+                        search_info.setdefault("tools", []).append({
+                            "done": tool_info["done"],
+                            "split_pos": len("".join(ai_reply_chunks)),
+                        })
+
+                        alog.info(step, "tool_called", str(state_data))
                         step += 1
-                        loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=SSE.THINKING, step=step))
-                        continue
-                    step += 1
-                    searching_sent = False
-                    raw = str(chunk.content)
-                    _parse_web_results(raw, search_info)
-                    gen_sent = False
-                    results_json = _format_search_results(chunk.content)
-                    parsed = json.loads(results_json)
-                    loop.call_soon_threadsafe(queue.put_nowait,
-                                              SSE.state(state=SSE.GENERATING, search_done=True,
-                                                        results=parsed.get("results", [])))
-                    alog.info(step, "search_done", "检索完成",
-                              {"hit_count": search_info.get("web", [])})
+                        loop.call_soon_threadsafe(queue.put_nowait, SSE.state(**state_data))
+                    continue
         except Exception as e:
             error_msg = str(e)
-            alog.error(step, "failed", "任务异常", {"error": error_msg[:200]})
+            alog.error(step, "failed", "任务异常", error_msg[:200])
+            step += 1
             loop.call_soon_threadsafe(queue.put_nowait, f"[ERROR] {e}")
         finally:
             try:

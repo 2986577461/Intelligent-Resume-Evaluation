@@ -22,21 +22,6 @@ os.makedirs(LOG_DIR, exist_ok=True)
 SENSITIVE_KEYS = {"token", "api_key", "authorization", "password", "secret", "cookie"}
 
 
-def _redact(data: dict) -> dict:
-    """递归脱敏敏感字段"""
-    result = {}
-    for k, v in data.items():
-        if any(s in k.lower() for s in SENSITIVE_KEYS):
-            result[k] = "****"
-        elif isinstance(v, dict):
-            result[k] = _redact(v)
-        elif isinstance(v, str) and len(v) > 200:
-            result[k] = v[:200] + "..."
-        else:
-            result[k] = v
-    return result
-
-
 class AgentLogger:
     def __init__(self, log_dir: str = LOG_DIR):
         self.logger = logging.getLogger("agent_trace")
@@ -62,16 +47,15 @@ class AgentLogger:
         self.logger.addHandler(console)
 
     def _log(self, level: str, step: int, state: str, msg: str,
-             data: dict | None = None, exc_info=None):
+             data: str = "", exc_info=None):
         entry = {
             "t": datetime.now().isoformat(),
             "lvl": level,
             "step": step,
             "state": state,
             "msg": msg,
+            "data": data
         }
-        if data:
-            entry["data"] = _redact(data)
         self.logger.log(
             getattr(logging, level, logging.INFO),
             json.dumps(entry, ensure_ascii=False),
@@ -79,15 +63,15 @@ class AgentLogger:
         )
 
     def info(self, step: int, state: str, msg: str,
-             data: dict | None = None):
+             data: str=""):
         self._log("INFO", step, state, msg, data)
 
     def warn(self, state: str, msg: str,
-             data: dict | None = None):
-        self._log("WARN",0, state, msg, data)
+             data: str=""):
+        self._log("WARN", 0, state, msg, data)
 
     def error(self, step: int, state: str, msg: str,
-              data: dict | None = None, exc_info=None):
+              data: str="", exc_info=None):
         self._log("ERROR", step, state, msg, data, exc_info)
 
 

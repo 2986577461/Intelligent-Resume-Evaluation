@@ -22,7 +22,7 @@
               </svg>
             </button>
           </div>
-          <div class="conv-list">
+          <TransitionGroup name="conv" tag="div" class="conv-list">
             <div
               v-for="conv in conversations"
               :key="conv.thread_id"
@@ -32,7 +32,7 @@
               ]"
               @click="switchConversation(conv.thread_id)"
             >
-              <div class="conv-item-title">{{ conv.title }}</div>
+              <div class="conv-item-title" :key="conv.title">{{ conv.title }}</div>
               <div class="conv-item-time">
                 {{ formatTime(conv.updated_at) }}
               </div>
@@ -54,7 +54,7 @@
             >
               暂无对话
             </div>
-          </div>
+          </TransitionGroup>
         </aside>
 
         <!-- Main Chat -->
@@ -78,7 +78,7 @@
                 />
                 <img
                   v-else
-                  :src="msg.streaming ? '/AgentAvatar.gif' : '/AgentAvatar.png'"
+                  :src="msg.streaming ? '/AgentAvatar.gif' : '/AgentAvatar.svg'"
                   alt="AI"
                 />
               </div>
@@ -112,6 +112,16 @@
               </div>
               <template v-if="msg.role === 'ai'">
                 <div class="msg-body">
+                  <Transition name="fade" mode="out-in">
+                    <div
+                      v-if="msg.toolStatus"
+                      class="search-link"
+                      style="cursor: default"
+                      :key="msg.toolStatus"
+                    >
+                      {{ msg.toolStatus }}
+                    </div>
+                  </Transition>
                   <div
                     class="ai-text"
                     v-html="renderMarkdown(searchBefore(msg))"
@@ -157,13 +167,6 @@
                     >
                       未找到相关内容
                     </div>
-                  </div>
-                  <div
-                    v-if="msg.searching"
-                    class="search-link"
-                    style="cursor: default"
-                  >
-                    Searching the web...
                   </div>
                   <div
                     v-if="searchAfter(msg)"
@@ -315,8 +318,9 @@ import {
   deleteConversation,
 } from "@/request/axiosForAi.js";
 import { uploadFile } from "@/request/axiosForFiles.js";
+import { RESUME_PREFIX, axiosResumeInstance } from "@/request/axiosInit.js";
 
-const CHAT_STREAM_URL = "/resume/chat-stream";
+const CHAT_STREAM_URL = `${RESUME_PREFIX}/chat-stream`;
 
 const userStore = useUserStore();
 const question = ref("");
@@ -333,7 +337,7 @@ const toastMsg = ref("");
 const msgBox = ref(null);
 const inputBox = ref(null);
 const fileInput = ref(null);
-const pendingFile = ref({ name: "", fileId: "", uploading: false });
+const pendingFile = ref({ name: "", file: null });
 let es = null;
 
 function _buildMsg(role, content, searchInfo, file) {
@@ -346,6 +350,7 @@ function _buildMsg(role, content, searchInfo, file) {
     webOpen: false,
     searchSplitPos: null,
     fileInfo: null,
+    toolStatus: "",
   });
   if (file) {
     m.fileInfo = { fileId: file.id, fileName: file.filename };
@@ -354,9 +359,20 @@ function _buildMsg(role, content, searchInfo, file) {
     try {
       const si =
         typeof searchInfo === "string" ? JSON.parse(searchInfo) : searchInfo;
-      if (si.split_pos != null) m.searchSplitPos = si.split_pos;
       if (si.web) {
         m.webResults = si.web;
+      }
+      if (si.tools) {
+        const _labels = {analysis_done: "Analysis", parse_done: "Parse"};
+        m.toolStatus = si.tools
+          .filter((t) => t.done !== "search_done")
+          .map((t) => "✓ " + (_labels[t.done] || "Tool") + " completed")
+          .join("\n");
+        if (m.searchSplitPos == null) {
+          // 用 web search 的位置作为文本分割点
+          const sw = si.tools.find((t) => t.done === "search_done");
+          if (sw && sw.split_pos != null) m.searchSplitPos = sw.split_pos;
+        }
       }
     } catch {}
   }
@@ -451,36 +467,19 @@ async function uploadPdf(file) {
     ElMessage.warning("仅支持 PDF 文件");
     return;
   }
-  pendingFile.value = { name: file.name, fileId: "", uploading: true };
-  try {
-    const res = await uploadFile(file, currentThreadId.value);
-    pendingFile.value.fileId = res.file_id;
-    toastMsg.value = `已上传：${res.filename}`;
-    toastVisible.value = true;
-    setTimeout(() => {
-      toastVisible.value = false;
-    }, 2000);
-  } catch {
-    pendingFile.value = { name: "", fileId: "", uploading: false };
-    ElMessage.error("文件上传失败");
-  }
-  pendingFile.value.uploading = false;
+  pendingFile.value = { name: file.name, file: file };
 }
 
 function clearFile() {
-  pendingFile.value = { name: "", fileId: "", uploading: false };
+  pendingFile.value = { name: "", file: null };
 }
 
 const previewFileUrl = ref("");
 const previewFileName = ref("");
 function openFile(fileId, fileName) {
   previewFileName.value = fileName;
-  const token = localStorage.getItem("authorization") || "";
-  fetch(`/resume/api/files/${fileId}`, { headers: { Authorization: token } })
-    .then((res) => {
-      if (!res.ok) throw new Error();
-      return res.blob();
-    })
+  axiosResumeInstance
+    .get(`/api/files/${fileId}`, { responseType: "blob" })
     .then((blob) => {
       previewFileUrl.value = URL.createObjectURL(blob);
     })
@@ -566,12 +565,12 @@ async function send() {
   if (!currentThreadId.value) {
     currentThreadId.value = "session-" + Date.now();
   }
+  const pending = pendingFile.value.file ? pendingFile.value : null;
+  const fileInfo = pending ? { fileName: pending.name } : null;
   messages.value.push({
     role: "user",
     text,
-    fileInfo: pendingFile.value.fileId
-      ? { fileId: pendingFile.value.fileId, fileName: pendingFile.value.name }
-      : null,
+    fileInfo,
   });
   question.value = "";
   autoResize();
@@ -588,13 +587,20 @@ async function send() {
       webResults: null,
       webOpen: false,
       searchSplitPos: null,
+      toolStatus: "",
     }),
   );
 
   const token = localStorage.getItem("authorization") || "";
   let url = `${CHAT_STREAM_URL}?question=${encodeURIComponent(text)}&thread_id=${currentThreadId.value}&token=${encodeURIComponent(token)}`;
-  if (pendingFile.value.fileId) {
-    url += `&file_id=${pendingFile.value.fileId}`;
+  if (pending) {
+    try {
+      const res = await uploadFile(pending.file, currentThreadId.value);
+      url += `&file_id=${res.file_id}`;
+      if (fileInfo) fileInfo.fileId = res.file_id;
+    } catch {
+      ElMessage.error("文件上传失败");
+    }
     clearFile();
   }
   const evtSource = new EventSource(url);
@@ -615,35 +621,29 @@ async function send() {
       msg.text = "出错：" + e.data.replace("[ERROR] ", "");
       msg.streaming = false;
       loading.value = false;
-    } else if (e.data === "[SEARCHING]") {
-      msg.searching = true;
-      if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
-    } else if (e.data.startsWith("[KB_RESULT]")) {
-      msg.searching = false;
-      if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
-      try {
-        msg.webResults =
-          JSON.parse(e.data.replace("[KB_RESULT]", "")).results || [];
-      } catch {}
     } else if (e.data.startsWith("[STATE]")) {
       // 处理后端流式状态信号
       try {
         const state = JSON.parse(e.data.replace("[STATE]", ""));
-        if (state.state === "searching_web") {
-          msg.searching = true;
+        if (state.state === "Searching the web") {
+          msg.toolStatus = "Searching the web...";
           if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
-        } else if (state.state === "generating" && state.search_done) {
-          msg.searching = false;
+        } else if (state.state === "Analyzing") {
+          msg.toolStatus = "Analyzing resume...";
+        } else if (state.state === "Parsing") {
+          msg.toolStatus = "Parsing resume...";
+        } else if (state.state === "search_done") {
           if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
           if (state.results) {
             msg.webResults = state.results;
           }
-        } else if (state.state === "analyzing" || state.state === "scoring") {
-          msg.searching = false;
+        } else if (state.state === "analysis_done") {
+          msg.toolStatus = "✓ Analysis completed";
+        } else if (state.state === "parse_done") {
+          msg.toolStatus = "✓ Parse completed";
         }
       } catch {}
     } else {
-      msg.searching = false;
       const t = e.data.replace(/\\n/g, "\n");
       msg.text += t;
       nextTick(() => scrollBottom());
@@ -779,6 +779,34 @@ onUnmounted(() => {
   flex: 2;
   overflow-y: auto;
   padding: 8px;
+}
+.conv-enter-active {
+  transition: opacity 0.6s ease-out, transform 0.5s ease-out;
+}
+.conv-leave-active {
+  transition: opacity 0.3s;
+}
+.conv-enter-from {
+  opacity: 0;
+  transform: translateY(-10px);
+}
+.conv-leave-to {
+  opacity: 0;
+}
+.conv-move {
+  transition: transform 0.4s;
+}
+
+.conv-item-title {
+  overflow: hidden;
+  white-space: nowrap;
+}
+.conv-enter-active .conv-item-title {
+  animation: typeIn 0.5s steps(20) 0.3s both;
+}
+@keyframes typeIn {
+  from { max-width: 0; }
+  to { max-width: 100%; }
 }
 .conv-item {
   padding: 10px 12px;
@@ -939,15 +967,33 @@ onUnmounted(() => {
   font-size: 19px;
   cursor: pointer;
   user-select: none;
+  -webkit-user-select: none;
   margin: 12px 0 6px;
   transition: color 0.15s;
+  white-space: pre-line;
 }
 .search-link:hover {
   color: #1a1a2e;
 }
+.fade-enter-active {
+  transition:
+    opacity 0.3s,
+    transform 0.3s;
+}
+.fade-leave-active {
+  transition: opacity 0.2s;
+}
+.fade-enter-from {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+.fade-leave-to {
+  opacity: 0;
+}
 .search-link .arrow {
   font-size: 12px;
   margin-left: 2px;
+  user-select: None;
   transition: transform 0.2s;
   display: inline-block;
 }
@@ -959,7 +1005,7 @@ onUnmounted(() => {
   margin: 4px 0 8px;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
-  background: #fafbfc;
+  background: #fefdfd;
   overflow: hidden;
   word-break: break-all;
 }

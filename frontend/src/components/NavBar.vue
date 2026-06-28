@@ -106,11 +106,11 @@ onUnmounted(() => window.removeEventListener("scroll", onScroll));
   right: 0;
   z-index: var(--z-sticky);
   height: var(--nav-height);
-  transition:
+  /* transition:
     background 0.4s var(--easing-smooth),
     backdrop-filter 0.4s var(--easing-smooth),
-    border-color 0.4s var(--easing-smooth);
-  background: transparent;
+    border-color 0.4s var(--easing-smooth); */
+  background: #fdfdfc;
   border-bottom: 1px solid transparent;
 }
 .navbar.scrolled {
