@@ -32,7 +32,9 @@
               ]"
               @click="switchConversation(conv.thread_id)"
             >
-              <div class="conv-item-title" :key="conv.title">{{ conv.title }}</div>
+              <div class="conv-item-title" :key="conv.title">
+                {{ conv.title }}
+              </div>
               <div class="conv-item-time">
                 {{ formatTime(conv.updated_at) }}
               </div>
@@ -78,7 +80,11 @@
                 />
                 <img
                   v-else
-                  :src="msg.streaming ? '/AgentAvatar.gif' : '/AgentAvatar.svg'"
+                  :src="
+                    msg.streaming
+                      ? RESUME_PREFIX + '/AgentAvatar.gif'
+                      : RESUME_PREFIX + '/AgentAvatar.svg'
+                  "
                   alt="AI"
                 />
               </div>
@@ -363,7 +369,7 @@ function _buildMsg(role, content, searchInfo, file) {
         m.webResults = si.web;
       }
       if (si.tools) {
-        const _labels = {analysis_done: "Analysis", parse_done: "Parse"};
+        const _labels = { analysis_done: "Analysis", parse_done: "Parse" };
         m.toolStatus = si.tools
           .filter((t) => t.done !== "search_done")
           .map((t) => "✓ " + (_labels[t.done] || "Tool") + " completed")
@@ -781,7 +787,9 @@ onUnmounted(() => {
   padding: 8px;
 }
 .conv-enter-active {
-  transition: opacity 0.6s ease-out, transform 0.5s ease-out;
+  transition:
+    opacity 0.6s ease-out,
+    transform 0.5s ease-out;
 }
 .conv-leave-active {
   transition: opacity 0.3s;
@@ -805,8 +813,12 @@ onUnmounted(() => {
   animation: typeIn 0.5s steps(20) 0.3s both;
 }
 @keyframes typeIn {
-  from { max-width: 0; }
-  to { max-width: 100%; }
+  from {
+    max-width: 0;
+  }
+  to {
+    max-width: 100%;
+  }
 }
 .conv-item {
   padding: 10px 12px;
@@ -952,11 +964,17 @@ onUnmounted(() => {
   font-size: 20px;
   line-height: 1.75;
   color: var(--text);
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 .ai-text :deep(hr) {
   border: none;
   border-top: 1px solid rgb(205, 205, 205);
   margin: 1em 0;
+}
+.ai-text :deep(pre) {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .search-link {

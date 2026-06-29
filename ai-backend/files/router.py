@@ -25,7 +25,7 @@ def _clean_pdf_text(text: str) -> str:
 
 @files_router.post("/upload", summary="上传 PDF 文件")
 async def upload_file(file: UploadFile = File(...),
-                      thread_id: str =Form(default=""),
+                      thread_id: str =Form(),
                       user_id: str = Depends(get_current_user)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(400, "仅支持 PDF 文件")

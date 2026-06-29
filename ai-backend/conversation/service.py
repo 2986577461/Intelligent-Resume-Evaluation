@@ -82,15 +82,6 @@ def init_app_db():
                      FOREIGN KEY (thread_id) REFERENCES conversations (thread_id) ON DELETE CASCADE
                  )
                  """)
-    for col, col_type in [("search_info", "TEXT"), ("user_id", "TEXT DEFAULT ''")]:
-        try:
-            conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError:
-            pass
-    try:
-        conn.execute("ALTER TABLE conversations ADD COLUMN user_id TEXT DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass
     conn.execute("""
                  CREATE TABLE IF NOT EXISTS uploaded_files
                  (
@@ -103,16 +94,6 @@ def init_app_db():
                      content     BLOB
                  )
                  """)
-    for col in ("chunk_count", "thread_id"):
-        try:
-            conn.execute(f"ALTER TABLE uploaded_files DROP COLUMN {col}")
-        except sqlite3.OperationalError:
-            pass
-    for col, typ in [("content", "BLOB"), ("thread_id", "TEXT DEFAULT ''")]:
-        try:
-            conn.execute(f"ALTER TABLE uploaded_files ADD COLUMN {col} {typ}")
-        except sqlite3.OperationalError:
-            pass
     conn.execute("""
                  CREATE TABLE IF NOT EXISTS message_attachments
                  (
@@ -212,7 +193,7 @@ def save_file_meta(file_id: str, filename: str, char_count: int,thread_id:str,
     try:
         now = datetime.now().isoformat()
         conn.execute(
-            "INSERT OR REPLACE INTO uploaded_files (file_id, filename, char_count, user_id, created_at, content,thread_id) "
+            "INSERT INTO uploaded_files (file_id, filename, char_count, user_id, created_at, content,thread_id) "
             "VALUES (?, ?, ?, ?, ?, ?,?)",
             (file_id, filename, char_count, user_id, now, content,thread_id),
         )
@@ -242,14 +223,6 @@ def get_file_content(file_id: str) -> bytes | None:
     finally:
         conn.close()
 
-
-def update_file_thread_id(file_id: str, thread_id: str):
-    conn = get_app_db()
-    try:
-        conn.execute("UPDATE uploaded_files SET thread_id = ? WHERE file_id = ?", (thread_id, file_id))
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def save_message_attachment(message_id: int, file_id: str, filename: str):
