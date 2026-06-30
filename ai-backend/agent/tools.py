@@ -144,7 +144,8 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
 你需要将以上json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
 当用户要求'分析''评价''打分''评估'时用这个。"""
     import os
-    user_id, thread_id = _get_user_thread(config)
+    runtime = config.get("configurable", {})
+    user_id, thread_id = runtime.get("user_id", ""), runtime.get("thread_id", "")
     data = _get_content_by_file_id_or_index(thread_id, file_id, index, user_id)
     if not data:
         return "未找到该序号对应的简历文件。"
@@ -152,11 +153,15 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
     from langchain.chat_models import init_chat_model
     from agent.graph import build_eval_graph
     model = init_chat_model(model=os.getenv("MODEL_NAME", "deepseek-v4-flash"))
-    graph = build_eval_graph(model)
+    emit = runtime.get("emit_state")
+    graph = build_eval_graph(model, emit)
 
     for s in graph.stream({"resume_text": data["text"]}):
-        if "report" in s:
-            report = s["report"].get("report", "")
+        if emit and "resume_analyst" in s:
+            emit("简历信息评估中")
+        node = s.get("report")
+        if node:
+            report = node.get("report", "") if isinstance(node, dict) else node
             if report:
                 return f"「{data['filename']}」的评分分析结果：\n\n{report}"
     return "评分分析失败，请重试。"

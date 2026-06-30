@@ -31,14 +31,15 @@ def _call_llm(prompt: str, text: str, model) -> dict:
         return {"raw": content}
 
 
-def resume_analyst_node(state: dict, model) -> dict:
+def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
     """LLM 提取简历结构化信息"""
     resume_text = state.get("resume_text", "")
     if not resume_text:
         return {"error": "缺少简历文本"}
+    if emit_state:
+        emit_state("提取简历信息中")
     prompt = _load_prompt("resume_analyst.md")
     output = _call_llm(prompt, f"简历文本：\n{resume_text}", model)
-    print(output)
     return output
 
 
@@ -74,8 +75,10 @@ def education_analyst_node(state: dict, model) -> dict:
     return {"education_result": _call_llm(prompt, _analyst_input(state, "education"), model)}
 
 
-def report_generator_node(state: dict, model) -> dict:
+def report_generator_node(state: dict, model, emit_state=None) -> dict:
     """汇总各维度评分生成最终报告"""
+    if emit_state:
+        emit_state("评估报告生成中")
     results = {
         "skill_match": state.get("skill_result", {}),
         "project_depth": state.get("project_result", {}),

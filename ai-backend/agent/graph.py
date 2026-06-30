@@ -32,7 +32,7 @@ class EvalState(TypedDict):
     report: str
 
 
-def build_eval_graph(model):
+def build_eval_graph(model, emit_state=None):
     """
     构建并行简历评估工作流。
 
@@ -49,12 +49,12 @@ def build_eval_graph(model):
     """
     builder = StateGraph(EvalState)
 
-    builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model))
+    builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model, emit_state))
     builder.add_node("skill", lambda s: skill_analyst_node(s, model))
     builder.add_node("project", lambda s: project_analyst_node(s, model))
     builder.add_node("experience", lambda s: experience_analyst_node(s, model))
     builder.add_node("education", lambda s: education_analyst_node(s, model))
-    builder.add_node("report", lambda s: report_generator_node(s, model))
+    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state))
 
     builder.set_entry_point("resume_analyst")
     builder.add_edge("resume_analyst", "skill")

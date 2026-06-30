@@ -118,7 +118,7 @@
               </div>
               <template v-if="msg.role === 'ai'">
                 <div class="msg-body">
-                  <Transition name="fade" mode="out-in">
+                  <Transition name="fade">
                     <div
                       v-if="msg.toolStatus"
                       class="search-link"
@@ -345,6 +345,22 @@ const inputBox = ref(null);
 const fileInput = ref(null);
 const pendingFile = ref({ name: "", file: null });
 let es = null;
+
+let _statusQueue = [];
+let _statusTimer = null;
+function _setStatus(text, msg) {
+  _statusQueue.push(text);
+  if (_statusTimer) return;
+  const dequeue = () => {
+    if (_statusQueue.length > 0) {
+      msg.toolStatus = _statusQueue.shift();
+      _statusTimer = setTimeout(dequeue, 500);
+    } else {
+      _statusTimer = null;
+    }
+  };
+  dequeue();
+}
 
 function _buildMsg(role, content, searchInfo, file) {
   const m = reactive({
@@ -632,24 +648,37 @@ async function send() {
       try {
         const state = JSON.parse(e.data.replace("[STATE]", ""));
         if (state.state === "Searching the web") {
-          msg.toolStatus = "Searching the web...";
+          _setStatus("Searching the web...", msg);
           if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
         } else if (state.state === "Analyzing") {
-          msg.toolStatus = "Analyzing resume...";
+          _setStatus("Analyzing resume...", msg);
+        } else if (state.state === "提取简历信息中") {
+          _setStatus("提取简历信息中...", msg);
+        } else if (state.state === "简历信息评估中") {
+          _setStatus("简历信息评估中...", msg);
+        } else if (state.state === "评估报告生成中") {
+          _setStatus("评估报告生成中...", msg);
         } else if (state.state === "Parsing") {
-          msg.toolStatus = "Parsing resume...";
+          _setStatus("Parsing resume...", msg);
         } else if (state.state === "search_done") {
           if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
           if (state.results) {
             msg.webResults = state.results;
           }
         } else if (state.state === "analysis_done") {
-          msg.toolStatus = "✓ Analysis completed";
+          _setStatus("✓ Analysis completed", msg);
         } else if (state.state === "parse_done") {
-          msg.toolStatus = "✓ Parse completed";
+          _setStatus("✓ Parse completed", msg);
         }
       } catch {}
     } else {
+      _statusQueue = [];
+      if (_statusTimer) {
+        clearTimeout(_statusTimer);
+        _statusTimer = null;
+      }
+      msg.toolStatus = "";
+      msg.searching = false;
       const t = e.data.replace(/\\n/g, "\n");
       msg.text += t;
       nextTick(() => scrollBottom());
@@ -929,7 +958,8 @@ onUnmounted(() => {
   background: var(--user-bubble);
   border-radius: 18px;
   padding: 10px 16px;
-  min-width: 90%;
+  /* min-width: 90%; */
+  max-width: 90%;
   font-size: 20px;
   line-height: 1.6;
 }
@@ -976,6 +1006,22 @@ onUnmounted(() => {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.ai-text :deep(table) {
+  border-collapse: collapse;
+  width: 100%;
+}
+.ai-text :deep(th),
+.ai-text :deep(td) {
+  border: 1px solid #e5e7eb;
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+.ai-text :deep(th) {
+  background: #f9fafb;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .search-link {
   display: block;
@@ -989,9 +1035,6 @@ onUnmounted(() => {
   margin: 12px 0 6px;
   transition: color 0.15s;
   white-space: pre-line;
-}
-.search-link:hover {
-  /* color: #1a1a2e; */
 }
 .fade-enter-active {
   transition:
