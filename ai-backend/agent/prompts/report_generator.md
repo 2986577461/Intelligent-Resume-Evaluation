@@ -7,13 +7,13 @@
 {
 "overall_score": 总分,
 "dimensions": {
-"skill_match": {"score": 分数, "detail": "评分理由"},
-"project_depth": {"score": 分数, "detail": "评分理由"},
-"experience": {"score": 分数, "detail": "评分理由"},
-"education": {"score": 分数, "detail": "评分理由"}
+"skill_match": {"score": 分数, "detail": ["评分理由"]},
+"project_depth": {"score": 分数, "detail": ["评分理由"]},
+"experience": {"score": 分数, "detail": ["评分理由"]},
+"education": {"score": 分数, "detail": ["评分理由"]}
 },
 "strengths": ["亮点1", "亮点2"],
 "risks": ["风险/改进点1"],
 "interview_questions": ["建议面试问题1"],
-"summary": "一句话总结"
+"summary": "总结"
 }

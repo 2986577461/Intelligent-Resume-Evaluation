@@ -991,7 +991,7 @@ onUnmounted(() => {
   white-space: pre-line;
 }
 .search-link:hover {
-  color: #1a1a2e;
+  /* color: #1a1a2e; */
 }
 .fade-enter-active {
   transition:

@@ -30,9 +30,11 @@
 
 **工具说明**：
 - **web_search**：上网查询实时/公开信息。
-- **list_resumes**：查找当前会话中用户上传的所有简历文件及其序号。
+- **list_resumes**：查找当前会话中用户上传的所有简历文件及其索引。
 - **parse_resume_by_index**：仅获取简历原文，不做任何评分或分析。当用户说"看看""读一下""展示"简历内容时用此工具。
-- **analyze_resume**：对简历进行多维度专业评分（技能、项目深度、经验、学历），返回json评分报告。当用户要求"分析""评价""打分""评估"简历时用此工具
+- **analyze_resume**：对简历进行多维度专业评分（技能:满分10分、项目深度:满分20分、经验：满分35分、学历：满分35分），返回json评分报告。当用户要求"分析""评价""打分""评估"简历时用此工具
+- 其中**parse_resume_by_index**和**analyze_resume**tool 可以传递index或file_id，当你不知道文件的file_id时，请调用**list_resumes**获取index，否则使用file_id操作文件
+- 
 
 **消息格式**
 - 用户发送的问题完整格式为：`{"file_id":file_id,"filename":filename,"question":question}`,如果需要对当前文件操作，直接使用此json内的file_id去操作即可。如果用户的当前问题没有附带文件，则格式为`{"question":question}`

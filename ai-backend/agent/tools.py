@@ -91,7 +91,7 @@ def get_current_time() -> str:
 
 @tool
 def list_resumes(config: RunnableConfig) -> str:
-    """列出当前会话中用户上传的所有简历文件及其序号。"""
+    """列出当前会话中用户上传的所有简历文件及其索引。"""
     user_id, thread_id = _get_user_thread(config)
     conn = get_app_db()
     try:
@@ -130,16 +130,17 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
     {
   "overall_score": 总分,
   "dimensions": {
-    "skill_match": {"score": 带权分数, "detail": "评分理由"},
-    "project_depth": {"score": 带权分数, "detail": "评分理由"},
-    "experience": {"score": 带权分数, "detail": "评分理由"},
-    "education": {"score": 带权分数, "detail": "评分理由"}
+    "skill_match": {"score": 分数, "detail": ["评分理由"]},
+    "project_depth": {"score": 分数, "detail": ["评分理由"]},
+    "experience": {"score": 分数, "detail": ["评分理由"]},
+    "education": {"score": 分数, "detail": ["评分理由"]}
   },
   "strengths": ["亮点1", "亮点2"],
   "risks": ["风险/改进点1"],
   "interview_questions": ["建议面试问题1"],
-  "summary": "一句话总结"
+  "summary": "总结"
 }
+其中技能匹配满分10分，项目深度满分35分，经历满分20分，教育35分
 你需要将以上json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
 当用户要求'分析''评价''打分''评估'时用这个。"""
     import os

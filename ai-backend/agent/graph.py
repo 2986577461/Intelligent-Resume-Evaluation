@@ -12,11 +12,19 @@ from agent.nodes import (
     education_analyst_node,
     report_generator_node,
 )
+from common.logger import get_agent_logger
+
+alog = get_agent_logger()
 
 
 class EvalState(TypedDict):
     resume_text: str
     analysis: dict
+    position: str
+    skills: list
+    education: list
+    experiences: list
+    projects: list
     skill_result: dict
     project_result: dict
     experience_result: dict
@@ -35,12 +43,9 @@ def build_eval_graph(model):
                    └─ edu ───┘
 
     执行顺序：
-    1. resume_analyst → 提取结构化信息（姓名、技能、教育、年限、项目）
+    1. resume_analyst → 提取结构化信息（技能、教育、经验、项目等）
     2. skill / project / experience / education → 四个维度独立并行评分
-    3. report → 汇总各维度评分，按权重计算总分，生成最终报告
-
-    LangGraph fan-out 机制：resume_analyst 完成后，四个 analyst
-    在同一个 superstep 中并行执行，互不干扰。
+    3. report → 汇总各维度评分，生成最终报告
     """
     builder = StateGraph(EvalState)
 
@@ -52,12 +57,10 @@ def build_eval_graph(model):
     builder.add_node("report", lambda s: report_generator_node(s, model))
 
     builder.set_entry_point("resume_analyst")
-    # fan-out：一个上游分叉到四个并行节点
     builder.add_edge("resume_analyst", "skill")
     builder.add_edge("resume_analyst", "project")
     builder.add_edge("resume_analyst", "experience")
     builder.add_edge("resume_analyst", "education")
-    # fan-in：四个节点汇合到 report
     builder.add_edge("skill", "report")
     builder.add_edge("project", "report")
     builder.add_edge("experience", "report")
@@ -65,42 +68,3 @@ def build_eval_graph(model):
     builder.set_finish_point("report")
 
     return builder.compile()
-
-# ```json
-# {
-#   "overall_score": ,
-#   "dimensions": {
-#     "skill_match": {
-#       "score": ,
-#       "detail": ""
-#     },
-#     "project_depth": {
-#       "score": 25,
-#       "detail": ""
-#     },
-#     "experience": {
-#       "score": 20,
-#       "detail": ""
-#     },
-#     "education": {
-#       "score": 45,
-#       "detail": ""
-#     }
-#   },
-#   "strengths": [
-#     "",
-#     ""
-#   ],
-#   "risks": [
-#     "",
-#     "",
-#     ""
-#   ],
-#   "interview_questions": [
-#     "",
-#     "如果评论表数据量达到千万级，你会如何设计分页和缓存方案来保证响应速度？",
-#     "描述一个你在项目开发中遇到的最棘手的技术问题，你是如何定位并解决的？"
-#   ],
-#   "summary": "该候选人技术广度尚可，但项目经验浅、学历偏低，整体竞争力较弱，需通过实习或深度项目提升实践能力。"
-# }
-# ```
