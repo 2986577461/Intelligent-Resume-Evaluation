@@ -2,11 +2,9 @@
 
 import asyncio
 from datetime import datetime
-from io import BytesIO
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
-from pypdf import PdfReader
 
 from common.business_client import business_client
 from conversation.service import get_app_db
@@ -17,18 +15,19 @@ from conversation.service import get_app_db
 
 def _get_content_by_file_id_or_index(thread_id: str, file_id: str | None = None,
                                      index: int | None = None, user_id: str | None = None) -> dict | None:
-    """查 uploaded_files，取第 index 份或按 file_id 查，解析 content BLOB 返回 {file_id, filename, text}"""
+    """查 uploaded_files，取第 index 份或按 file_id 查，返回 {file_id, filename, text}"""
     conn = get_app_db()
 
     if file_id:
         row = conn.execute(
-            "SELECT file_id, filename, content FROM uploaded_files "
+            "SELECT file_id, filename, extracted_text FROM uploaded_files "
             "WHERE file_id = ?", (file_id,)
         ).fetchone()
         rows = [row] if row else []
+        conn.close()
     else:
         rows = conn.execute(
-            "SELECT file_id, filename, content FROM uploaded_files "
+            "SELECT file_id, filename, extracted_text FROM uploaded_files "
             "WHERE user_id = ? AND thread_id = ? ORDER BY created_at",
             (user_id, thread_id),
         ).fetchall()
@@ -37,18 +36,14 @@ def _get_content_by_file_id_or_index(thread_id: str, file_id: str | None = None,
     if file_id:
         row = rows[0] if rows else None
     else:
-        if not rows or index < 1 or index > len(rows):
+        if not rows or index is None or index < 1 or index > len(rows):
             return None
         row = rows[index - 1]
 
-    if not row or not row["content"]:
+    if not row or not row["extracted_text"]:
         return None
 
-    text = "".join(page.extract_text() or "" for page in PdfReader(BytesIO(row["content"])).pages)
-    if not text.strip():
-        return None
-
-    return {"file_id": row["file_id"], "filename": row["filename"], "text": text.strip()}
+    return {"file_id": row["file_id"], "filename": row["filename"], "text": row["extracted_text"].strip()}
 
 
 def _get_user_thread(config: RunnableConfig) -> tuple[str, str]:
@@ -126,21 +121,6 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None) -> str:
     """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回json结构化评分报告。
     参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
-    返回的json结构化评分报告格式如下：
-    {
-  "overall_score": 总分,
-  "dimensions": {
-    "skill_match": {"score": 分数, "detail": ["评分理由"]},
-    "project_depth": {"score": 分数, "detail": ["评分理由"]},
-    "experience": {"score": 分数, "detail": ["评分理由"]},
-    "education": {"score": 分数, "detail": ["评分理由"]}
-  },
-  "strengths": ["亮点1", "亮点2"],
-  "risks": ["风险/改进点1"],
-  "interview_questions": ["建议面试问题1"],
-  "summary": "总结"
-}
-其中技能匹配满分10分，项目深度满分35分，经历满分20分，教育35分
 你需要将以上json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
 当用户要求'分析''评价''打分''评估'时用这个。"""
     import os
@@ -157,8 +137,6 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
     graph = build_eval_graph(model, emit)
 
     for s in graph.stream({"resume_text": data["text"]}):
-        if emit and "resume_analyst" in s:
-            emit("简历信息评估中")
         node = s.get("report")
         if node:
             report = node.get("report", "") if isinstance(node, dict) else node

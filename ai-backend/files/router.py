@@ -2,15 +2,23 @@
 
 import re
 import uuid
-from io import BytesIO
 
+import fitz
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from fastapi.responses import Response
-from pypdf import PdfReader
 
-from conversation.service import get_current_user, save_file_meta, get_file_content
+from conversation.service import get_current_user, save_file_meta, get_file_content, get_filename
 
 files_router = APIRouter(prefix="/api/files", tags=["文件管理"])
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+MIME_MAP = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 
 
 def _clean_pdf_text(text: str) -> str:
@@ -23,30 +31,43 @@ def _clean_pdf_text(text: str) -> str:
     return "\n".join(lines)
 
 
-@files_router.post("/upload", summary="上传 PDF 文件")
+def _ext(filename: str) -> str:
+    return "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+
+@files_router.post("/upload", summary="上传简历文件（PDF / 图片）")
 async def upload_file(file: UploadFile = File(...),
-                      thread_id: str =Form(),
+                      thread_id: str = Form(),
                       user_id: str = Depends(get_current_user)):
-    if not file.filename or not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "仅支持 PDF 文件")
+    ext = _ext(file.filename or "")
+    if ext not in (".pdf", *IMAGE_EXTS):
+        raise HTTPException(400, "仅支持 PDF 或图片（png/jpg/jpeg/webp）")
 
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "文件内容为空")
 
-    try:
-        reader = PdfReader(BytesIO(raw))
-        text = "".join(page.extract_text() or "" for page in reader.pages)
-    except Exception as e:
-        raise HTTPException(400, f"PDF 解析失败：{e}")
+    if ext == ".pdf":
+        try:
+            doc = fitz.open(stream=raw, filetype="pdf")
+            text = "".join(page.get_text() for page in doc)
+            doc.close()
+        except Exception as e:
+            raise HTTPException(400, f"PDF 解析失败：{e}")
+        text = _clean_pdf_text(text)
+    else:
+        from common.vision_client import extract_text_from_image
+        try:
+            text = extract_text_from_image(raw, MIME_MAP.get(ext, "image/png"))
+        except Exception as e:
+            raise HTTPException(400, f"图片识别失败：{e}")
 
-    text = _clean_pdf_text(text)
-    if not text:
-        raise HTTPException(400, "未能从 PDF 中提取到文本内容")
+    if not text.strip():
+        raise HTTPException(400, "未能从文件中提取到文本内容")
 
     file_id = uuid.uuid4().hex[:12]
-
-    save_file_meta(file_id, file.filename, len(text),thread_id, user_id, content=raw)
+    save_file_meta(file_id, file.filename, len(text), thread_id, user_id,
+                   content=raw, extracted_text=text.strip())
 
     return {"file_id": file_id, "filename": file.filename}
 
@@ -56,4 +77,6 @@ def get_file(file_id: str):
     content = get_file_content(file_id)
     if content is None:
         raise HTTPException(404, "文件不存在")
-    return Response(content=content, media_type="application/pdf")
+    filename = get_filename(file_id) or ""
+    media_type = MIME_MAP.get(_ext(filename), "application/octet-stream")
+    return Response(content=content, media_type=media_type)

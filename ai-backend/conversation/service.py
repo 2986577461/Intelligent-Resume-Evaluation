@@ -85,15 +85,20 @@ def init_app_db():
     conn.execute("""
                  CREATE TABLE IF NOT EXISTS uploaded_files
                  (
-                     file_id     TEXT PRIMARY KEY,
-                     filename    TEXT NOT NULL,
-                     char_count  INTEGER DEFAULT 0,
-                     user_id     TEXT DEFAULT '',
-                     thread_id   TEXT DEFAULT '',
-                     created_at  TEXT NOT NULL,
-                     content     BLOB
+                     file_id        TEXT PRIMARY KEY,
+                     filename       TEXT NOT NULL,
+                     char_count     INTEGER DEFAULT 0,
+                     user_id        TEXT DEFAULT '',
+                     thread_id      TEXT DEFAULT '',
+                     created_at     TEXT NOT NULL,
+                     content        BLOB,
+                     extracted_text TEXT
                  )
                  """)
+    try:
+        conn.execute("ALTER TABLE uploaded_files ADD COLUMN extracted_text TEXT")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
                  CREATE TABLE IF NOT EXISTS message_attachments
                  (
@@ -187,17 +192,28 @@ def save_ai_message(thread_id: str, content: str, search_info: dict | None, user
         conn.close()
 
 
-def save_file_meta(file_id: str, filename: str, char_count: int,thread_id:str,
-                    user_id: str, content: bytes | None = None):
+def save_file_meta(file_id: str, filename: str, char_count: int, thread_id: str,
+                   user_id: str, content: bytes | None = None, extracted_text: str = ""):
     conn = get_app_db()
     try:
         now = datetime.now().isoformat()
         conn.execute(
-            "INSERT INTO uploaded_files (file_id, filename, char_count, user_id, created_at, content,thread_id) "
-            "VALUES (?, ?, ?, ?, ?, ?,?)",
-            (file_id, filename, char_count, user_id, now, content,thread_id),
+            "INSERT INTO uploaded_files (file_id, filename, char_count, user_id, created_at, content, thread_id, extracted_text) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (file_id, filename, char_count, user_id, now, content, thread_id, extracted_text),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_extracted_text(file_id: str) -> str | None:
+    conn = get_app_db()
+    try:
+        row = conn.execute(
+            "SELECT extracted_text FROM uploaded_files WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        return row["extracted_text"] if row else None
     finally:
         conn.close()
 

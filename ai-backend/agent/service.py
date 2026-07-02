@@ -104,7 +104,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             "configurable": {"thread_id": thread_id, "token": token, "user_id": user_id, "file_id": file_id,
                              "emit_state": _emit_state}}
         step = 0
-        # alog.info(step, "user_asking", "用户提问", question)
+        alog.info(step, "user_asking", "用户提问", question)
         step += 1
 
         current_tool_name = ""
@@ -125,7 +125,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         _thinking.append(_rc)
                     # 如果停止了输出推理并且有推理日志
                     elif _thinking:
-                        # alog.info(step, "model_thinking", "模型推理", "".join(_thinking))
+                        alog.info(step, "model_thinking", "模型推理", "".join(_thinking))
                         step += 1
                         _thinking.clear()
                     # agent想要调用tool
@@ -138,7 +138,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                                 name = getattr(tc, "name", "") or ""
                             if name and name != current_tool_name:
                                 current_tool_name = name
-                                # alog.info(step, "tool_call", "调用工具", current_tool_name)
+                                alog.info(step, "tool_call", "调用工具", current_tool_name)
                                 step += 1
 
                                 tool_info = SSE.match_tool(name)
@@ -171,7 +171,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             "split_pos": len("".join(ai_reply_chunks)),
                         })
 
-                        # alog.info(step, "tool_called", str(state_data))
+                        alog.info(step, "tool_called", str(state_data))
                         step += 1
                         loop.call_soon_threadsafe(queue.put_nowait, SSE.state(**state_data))
                     continue

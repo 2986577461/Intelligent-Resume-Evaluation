@@ -219,7 +219,7 @@
               <div class="input-inner">
                 <button
                   class="btn-upload"
-                  title="上传 PDF"
+                  title="上传简历（PDF / 图片）"
                   @click="triggerUpload()"
                 >
                   <svg
@@ -235,7 +235,7 @@
                 <input
                   type="file"
                   ref="fileInput"
-                  accept=".pdf"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp"
                   @change="onFileSelect"
                   style="display: none"
                 />
@@ -296,7 +296,7 @@
       </svg>
     </button>
 
-    <!-- PDF Preview Modal -->
+    <!-- 文件预览 Modal（PDF / 图片） -->
     <div
       v-if="previewFileUrl"
       class="preview-overlay"
@@ -307,7 +307,13 @@
           <span class="preview-title">{{ previewFileName }}</span>
           <button class="preview-close" @click="closePreview">×</button>
         </div>
-        <iframe class="preview-iframe" :src="previewFileUrl"></iframe>
+        <img
+          v-if="previewIsImage"
+          class="preview-image"
+          :src="previewFileUrl"
+          alt=""
+        />
+        <iframe v-else class="preview-iframe" :src="previewFileUrl"></iframe>
       </div>
     </div>
   </div>
@@ -348,18 +354,26 @@ let es = null;
 
 let _statusQueue = [];
 let _statusTimer = null;
-function _setStatus(text, msg) {
-  _statusQueue.push(text);
+function _runStatusQueue(msg) {
   if (_statusTimer) return;
   const dequeue = () => {
     if (_statusQueue.length > 0) {
-      msg.toolStatus = _statusQueue.shift();
+      msg.toolStatus = _statusQueue.shift() || "";
       _statusTimer = setTimeout(dequeue, 500);
     } else {
       _statusTimer = null;
     }
   };
   dequeue();
+}
+function _setStatus(text, msg) {
+  _statusQueue.push(text);
+  _runStatusQueue(msg);
+}
+// 清空状态也走队列，保证排在前面的“完成”提示至少展示一轮再消失
+function _clearStatus(msg) {
+  _statusQueue.push(null);
+  _runStatusQueue(msg);
 }
 
 function _buildMsg(role, content, searchInfo, file) {
@@ -467,26 +481,27 @@ function triggerUpload() {
 
 async function onFileSelect(e) {
   const file = e.target?.files?.[0];
-  if (file) await uploadPdf(file);
+  if (file) await pickFile(file);
 }
 
 function onPaste(e) {
   const items = e.clipboardData?.items;
   if (!items) return;
   for (const item of items) {
-    if (item.type === "application/pdf") {
+    if (item.type === "application/pdf" || item.type.startsWith("image/")) {
       e.preventDefault();
       const file = item.getAsFile();
-      if (file) uploadPdf(file);
+      if (file) pickFile(file);
       break;
     }
   }
 }
 
-async function uploadPdf(file) {
+const ACCEPT_RE = /\.(pdf|png|jpe?g|webp)$/i;
+async function pickFile(file) {
   if (pendingFile.value.uploading) return;
-  if (!file.name.toLowerCase().endsWith(".pdf")) {
-    ElMessage.warning("仅支持 PDF 文件");
+  if (!ACCEPT_RE.test(file.name)) {
+    ElMessage.warning("仅支持 PDF 或图片（png/jpg/jpeg/webp）");
     return;
   }
   pendingFile.value = { name: file.name, file: file };
@@ -498,8 +513,10 @@ function clearFile() {
 
 const previewFileUrl = ref("");
 const previewFileName = ref("");
+const previewIsImage = ref(false);
 function openFile(fileId, fileName) {
   previewFileName.value = fileName;
+  previewIsImage.value = /\.(png|jpe?g|webp)$/i.test(fileName);
   axiosResumeInstance
     .get(`/api/files/${fileId}`, { responseType: "blob" })
     .then((blob) => {
@@ -511,6 +528,7 @@ function closePreview() {
   if (previewFileUrl.value) URL.revokeObjectURL(previewFileUrl.value);
   previewFileUrl.value = "";
   previewFileName.value = "";
+  previewIsImage.value = false;
 }
 
 async function switchConversation(threadId) {
@@ -589,6 +607,7 @@ async function send() {
   }
   const pending = pendingFile.value.file ? pendingFile.value : null;
   const fileInfo = pending ? { fileName: pending.name } : null;
+  if (pending) clearFile();
   messages.value.push({
     role: "user",
     text,
@@ -598,6 +617,10 @@ async function send() {
   autoResize();
   loading.value = true;
   nextTick(() => scrollBottom());
+
+  // 每次新消息重置状态队列，避免上一轮残留干扰
+  if (_statusTimer) { clearTimeout(_statusTimer); _statusTimer = null; }
+  _statusQueue = [];
 
   const aiIdx = messages.value.length;
   messages.value.push(
@@ -623,7 +646,6 @@ async function send() {
     } catch {
       ElMessage.error("文件上传失败");
     }
-    clearFile();
   }
   const evtSource = new EventSource(url);
   es = evtSource;
@@ -672,12 +694,7 @@ async function send() {
         }
       } catch {}
     } else {
-      _statusQueue = [];
-      if (_statusTimer) {
-        clearTimeout(_statusTimer);
-        _statusTimer = null;
-      }
-      msg.toolStatus = "";
+      _clearStatus(msg);
       msg.searching = false;
       const t = e.data.replace(/\\n/g, "\n");
       msg.text += t;
@@ -959,7 +976,7 @@ onUnmounted(() => {
   border-radius: 18px;
   padding: 10px 16px;
   /* min-width: 90%; */
-  max-width: 90%;
+  /* max-width: 90%; */
   font-size: 20px;
   line-height: 1.6;
 }
@@ -1362,6 +1379,13 @@ onUnmounted(() => {
   flex: 1;
   border: none;
   width: 100%;
+}
+.preview-image {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  background: #f3f4f6;
 }
 
 @media (max-width: 768px) {
