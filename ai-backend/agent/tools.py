@@ -121,7 +121,7 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None) -> str:
     """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回json结构化评分报告。
     参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
-你需要将以上json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
+你需要将返回的json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
 当用户要求'分析''评价''打分''评估'时用这个。"""
     import os
     runtime = config.get("configurable", {})
@@ -137,6 +137,8 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
     graph = build_eval_graph(model, emit)
 
     for s in graph.stream({"resume_text": data["text"]}):
+        if emit and "resume_analyst" in s:
+            emit("简历信息评估中")
         node = s.get("report")
         if node:
             report = node.get("report", "") if isinstance(node, dict) else node

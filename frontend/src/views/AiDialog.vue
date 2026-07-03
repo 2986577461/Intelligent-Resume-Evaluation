@@ -206,14 +206,38 @@
 
           <div class="input-wrap">
             <div v-if="pendingFile.name" class="file-tag-bar">
-              <span class="file-tag-name">{{ pendingFile.name }}</span>
-              <button
-                class="file-tag-remove"
-                @click="clearFile"
-                title="移除文件"
-              >
-                ×
-              </button>
+              <div class="file-chip" :class="{ 'file-chip-error': pendingFile.error }">
+                <div class="file-chip-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
+                </div>
+                <div class="file-chip-body">
+                  <span class="file-chip-name">{{ pendingFile.name }}</span>
+                  <span class="file-chip-status">
+                    <template v-if="pendingFile.error">上传失败</template>
+                    <template v-else-if="pendingFile.uploading">上传中...</template>
+                    <template v-else>已就绪</template>
+                  </span>
+                </div>
+                <div class="file-chip-right">
+                  <span v-if="pendingFile.uploading" class="spinner-upload"></span>
+                  <svg v-else-if="!pendingFile.error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14" class="file-chip-check">
+                    <polyline points="20 6 9 17 4 12"/>
+                  </svg>
+                  <button
+                    class="file-tag-remove"
+                    @click="clearFile"
+                    title="移除文件"
+                    :disabled="pendingFile.uploading"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
+                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </div>
             <div class="input-box">
               <div class="input-inner">
@@ -253,7 +277,7 @@
                 <button
                   class="btn-send"
                   @click="send()"
-                  :disabled="loading || !question.trim()"
+                  :disabled="loading || !question.trim() || pendingFile.uploading"
                   title="发送"
                 >
                   <span v-if="loading" class="spinner-sm"></span>
@@ -349,8 +373,10 @@ const toastMsg = ref("");
 const msgBox = ref(null);
 const inputBox = ref(null);
 const fileInput = ref(null);
-const pendingFile = ref({ name: "", file: null });
+const pendingFile = ref({ name: "", uploading: false, fileId: null, error: false });
 let es = null;
+let _uploadPromise = null;
+let _uploadToken = 0;
 
 let _statusQueue = [];
 let _statusTimer = null;
@@ -469,6 +495,7 @@ async function loadConversations() {
   try {
     conversations.value = await getConversations();
   } catch {}
+  axiosResumeInstance.delete("/api/files/orphaned").catch(() => {});
 }
 
 function triggerUpload() {
@@ -497,6 +524,10 @@ function onPaste(e) {
   }
 }
 
+function _deleteUploadedFile(fileId) {
+  axiosResumeInstance.delete(`/api/files/${fileId}`).catch(() => {});
+}
+
 const ACCEPT_RE = /\.(pdf|png|jpe?g|webp)$/i;
 async function pickFile(file) {
   if (pendingFile.value.uploading) return;
@@ -504,11 +535,34 @@ async function pickFile(file) {
     ElMessage.warning("仅支持 PDF 或图片（png/jpg/jpeg/webp）");
     return;
   }
-  pendingFile.value = { name: file.name, file: file };
+  if (!currentThreadId.value) {
+    currentThreadId.value = "session-" + Date.now();
+  }
+  const token = ++_uploadToken;
+  pendingFile.value = { name: file.name, uploading: true, fileId: null, error: false };
+  _uploadPromise = uploadFile(file, currentThreadId.value)
+    .then((res) => {
+      if (_uploadToken !== token) {
+        _deleteUploadedFile(res.file_id);
+        return;
+      }
+      pendingFile.value.fileId = res.file_id;
+      pendingFile.value.uploading = false;
+    })
+    .catch(() => {
+      if (_uploadToken !== token) return;
+      pendingFile.value.error = true;
+      pendingFile.value.uploading = false;
+      ElMessage.error("文件上传失败");
+    });
 }
 
 function clearFile() {
-  pendingFile.value = { name: "", file: null };
+  ++_uploadToken;
+  _uploadPromise = null;
+  const fileId = pendingFile.value.fileId;
+  pendingFile.value = { name: "", uploading: false, fileId: null, error: false };
+  if (fileId) _deleteUploadedFile(fileId);
 }
 
 const previewFileUrl = ref("");
@@ -533,6 +587,7 @@ function closePreview() {
 
 async function switchConversation(threadId) {
   if (loading.value) stopStream();
+  clearFile();
   currentThreadId.value = threadId;
   messages.value = [];
   loadingMessages.value = true;
@@ -550,6 +605,7 @@ async function switchConversation(threadId) {
 }
 function newConversation() {
   if (loading.value) stopStream();
+  clearFile();
   currentThreadId.value = "";
   messages.value = [];
   question.value = "";
@@ -600,14 +656,13 @@ function insertNewline() {
 
 async function send() {
   const text = question.value.trim();
-  if (!text || loading.value) return;
+  if (!text || loading.value || pendingFile.value.uploading) return;
 
   if (!currentThreadId.value) {
     currentThreadId.value = "session-" + Date.now();
   }
-  const pending = pendingFile.value.file ? pendingFile.value : null;
-  const fileInfo = pending ? { fileName: pending.name } : null;
-  if (pending) clearFile();
+  const hasPending = !!pendingFile.value.name;
+  const fileInfo = hasPending ? { fileName: pendingFile.value.name } : null;
   messages.value.push({
     role: "user",
     text,
@@ -638,13 +693,14 @@ async function send() {
 
   const token = localStorage.getItem("authorization") || "";
   let url = `${CHAT_STREAM_URL}?question=${encodeURIComponent(text)}&thread_id=${currentThreadId.value}&token=${encodeURIComponent(token)}`;
-  if (pending) {
-    try {
-      const res = await uploadFile(pending.file, currentThreadId.value);
-      url += `&file_id=${res.file_id}`;
-      if (fileInfo) fileInfo.fileId = res.file_id;
-    } catch {
-      ElMessage.error("文件上传失败");
+  if (hasPending) {
+    if (_uploadPromise) await _uploadPromise;
+    const fileId = pendingFile.value.fileId;
+    pendingFile.value.fileId = null;  // 阻止 clearFile 触发删除
+    clearFile();
+    if (fileId) {
+      url += `&file_id=${fileId}`;
+      if (fileInfo) fileInfo.fileId = fileId;
     }
   }
   const evtSource = new EventSource(url);
@@ -1212,26 +1268,93 @@ onUnmounted(() => {
 }
 
 .file-tag-bar {
+  padding: 0 0 8px;
+}
+.file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 8px 10px 8px 12px;
+  max-width: 320px;
+  transition: border-color 0.15s;
+}
+.file-chip-error {
+  background: #fff5f5;
+  border-color: #fecaca;
+}
+.file-chip-icon {
+  color: #0891b2;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+.file-chip-error .file-chip-icon {
+  color: #ef4444;
+}
+.file-chip-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.file-chip-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.file-chip-status {
+  font-size: 11px;
+  color: #94a3b8;
+}
+.file-chip-error .file-chip-status {
+  color: #ef4444;
+}
+.file-chip-right {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 4px 0 6px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
-.file-tag-name {
-  font-size: 12px;
-  color: #374151;
+.file-chip-check {
+  color: #10b981;
 }
 .file-tag-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   cursor: pointer;
-  color: #9ca3af;
-  font-size: 14px;
-  padding: 0 4px;
+  color: #cbd5e1;
+  padding: 2px;
+  border-radius: 4px;
+  transition: all 0.15s;
   line-height: 1;
 }
-.file-tag-remove:hover {
+.file-tag-remove:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.file-tag-remove:hover:not(:disabled) {
+  background: #fee2e2;
   color: #ef4444;
+}
+.spinner-upload {
+  width: 13px;
+  height: 13px;
+  border: 2px solid #e2e8f0;
+  border-top-color: #0891b2;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  flex-shrink: 0;
 }
 
 .btn-send {

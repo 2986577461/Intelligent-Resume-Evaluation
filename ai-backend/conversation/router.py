@@ -28,24 +28,6 @@ def list_conversations(user_id: str = Depends(get_current_user)):
         conn.close()
 
 
-@conversation_router.post("", summary="创建新会话")
-def create_conversation(body: CreateConversationRequest, user_id: str = Depends(get_current_user)):
-    """创建新会话，返回 thread_id"""
-    thread_id = str(uuid.uuid4())[:8]
-    now = datetime.now().isoformat()
-    conn = get_app_db()
-    try:
-        conn.execute(
-            "INSERT INTO conversations (thread_id, title, created_at, updated_at, user_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (thread_id, body.title, now, now, user_id),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return {"thread_id": thread_id, "title": body.title, "created_at": now}
-
-
 @conversation_router.delete("/{thread_id}", summary="删除会话")
 def delete_conversation(thread_id: str, user_id: str = Depends(get_current_user)):
     """删除会话及其所有消息（仅允许删除自己的会话）"""

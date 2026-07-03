@@ -5,8 +5,6 @@ import os
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.school_tier import classify_school
-
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -33,76 +31,48 @@ def _call_llm(prompt: str, text: str, model) -> dict:
         return {"raw": content}
 
 
-# ── 自包含评估节点（提取 + 评分合一，四路并行） ──
-
-def skill_node(state: dict, model, emit_state=None) -> dict:
-    """提取技能 + 评分"""
+def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
+    """LLM 提取简历结构化信息"""
     resume_text = state.get("resume_text", "")
+    if not resume_text:
+        return {"error": "缺少简历文本"}
     if emit_state:
         emit_state("提取简历信息中")
-    extracted = _call_llm(_load_prompt("extract_basic.md"), f"简历文本：\n{resume_text}", model)
-    position = extracted.get("position")
-    skills = extracted.get("skills", [])
-    result = _call_llm(
-        _load_prompt("skill_analyst.md"),
-        json.dumps({"skills": skills, "position": position}, ensure_ascii=False, indent=2),
-        model,
-    )
-    return {"skill_result": result}
+    prompt = _load_prompt("resume_analyst.md")
+    output = _call_llm(prompt, f"简历文本：\n{resume_text}", model)
+    return output
 
 
-def education_node(state: dict, model) -> dict:
-    """提取学历 + 分类 + 评分"""
-    resume_text = state.get("resume_text", "")
-    extracted = _call_llm(_load_prompt("extract_education.md"), f"简历文本：\n{resume_text}", model)
-    position = extracted.get("position")
-    raw_list = extracted.get("education", []) or []
-    education = []
-    for entry in raw_list:
-        if not entry:
-            continue
-        school = entry.get("school") or ""
-        degree = entry.get("degree") or ""
-        education.append({
-            "school": school,
-            "greade": classify_school(school, degree) if school else degree,
-            "major": entry.get("major"),
-            "时间": entry.get("时间"),
-        })
-    result = _call_llm(
-        _load_prompt("education_analyst.md"),
-        json.dumps({"education": education, "position": position}, ensure_ascii=False, indent=2),
-        model,
-    )
-    return {"education_result": result}
+def _analyst_input(state: dict, key: str) -> str:
+    """构建 analyst 的输入：{数据, position}"""
+    return json.dumps({
+        key: state.get(key, []),
+        "position": state.get("position"),
+    }, ensure_ascii=False, indent=2)
 
 
-def experience_node(state: dict, model) -> dict:
-    """提取经历 + 评分"""
-    resume_text = state.get("resume_text", "")
-    extracted = _call_llm(_load_prompt("extract_experience.md"), f"简历文本：\n{resume_text}", model)
-    position = extracted.get("position")
-    experiences = extracted.get("experiences", [])
-    result = _call_llm(
-        _load_prompt("experience_analyst.md"),
-        json.dumps({"experiences": experiences, "position": position}, ensure_ascii=False, indent=2),
-        model,
-    )
-    return {"experience_result": result}
+def skill_analyst_node(state: dict, model) -> dict:
+    """技能匹配度评估"""
+    prompt = _load_prompt("skill_analyst.md")
+    return {"skill_result": _call_llm(prompt, _analyst_input(state, "skills"), model)}
 
 
-def project_node(state: dict, model) -> dict:
-    """提取项目 + 评分"""
-    resume_text = state.get("resume_text", "")
-    extracted = _call_llm(_load_prompt("extract_project.md"), f"简历文本：\n{resume_text}", model)
-    position = extracted.get("position")
-    projects = extracted.get("projects", [])
-    result = _call_llm(
-        _load_prompt("project_analyst.md"),
-        json.dumps({"projects": projects, "position": position}, ensure_ascii=False, indent=2),
-        model,
-    )
-    return {"project_result": result}
+def project_analyst_node(state: dict, model) -> dict:
+    """项目深度评估"""
+    prompt = _load_prompt("project_analyst.md")
+    return {"project_result": _call_llm(prompt, _analyst_input(state, "projects"), model)}
+
+
+def experience_analyst_node(state: dict, model) -> dict:
+    """经验背景评估"""
+    prompt = _load_prompt("experience_analyst.md")
+    return {"experience_result": _call_llm(prompt, _analyst_input(state, "experiences"), model)}
+
+
+def education_analyst_node(state: dict, model) -> dict:
+    """学历背景评估"""
+    prompt = _load_prompt("education_analyst.md")
+    return {"education_result": _call_llm(prompt, _analyst_input(state, "education"), model)}
 
 
 def report_generator_node(state: dict, model, emit_state=None) -> dict:
@@ -116,7 +86,8 @@ def report_generator_node(state: dict, model, emit_state=None) -> dict:
         "education": state.get("education_result", {}),
     }
     text = json.dumps(results, ensure_ascii=False, indent=2)
-    result = _call_llm(_load_prompt("report_generator.md"), text, model)
+    prompt = _load_prompt("report_generator.md")
+    result = _call_llm(prompt, text, model)
 
     if isinstance(result, dict) and "raw" not in result:
         return {"report": json.dumps(result, ensure_ascii=False, indent=2)}

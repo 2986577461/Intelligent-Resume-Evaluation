@@ -7,7 +7,7 @@ import fitz
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from fastapi.responses import Response
 
-from conversation.service import get_current_user, save_file_meta, get_file_content, get_filename
+from conversation.service import get_current_user, save_file_meta, get_file_content, get_filename, get_app_db
 
 files_router = APIRouter(prefix="/api/files", tags=["文件管理"])
 
@@ -72,6 +72,23 @@ async def upload_file(file: UploadFile = File(...),
     return {"file_id": file_id, "filename": file.filename}
 
 
+@files_router.delete("/orphaned", summary="清理当前用户未绑定消息的孤立文件")
+async def cleanup_orphaned(user_id: str = Depends(get_current_user)):
+    """页面加载时调用，删除该用户上传超过1分钟但未绑定任何消息的文件"""
+    conn = get_app_db()
+    try:
+        conn.execute("""
+            DELETE FROM uploaded_files
+            WHERE user_id = ?
+              AND file_id NOT IN (SELECT file_id FROM message_attachments)
+              AND created_at < datetime('now', '-1 minute')
+        """, (user_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
+
+
 @files_router.get("/{file_id}", summary="获取文件原始内容")
 def get_file(file_id: str):
     content = get_file_content(file_id)
@@ -80,3 +97,19 @@ def get_file(file_id: str):
     filename = get_filename(file_id) or ""
     media_type = MIME_MAP.get(_ext(filename), "application/octet-stream")
     return Response(content=content, media_type=media_type)
+
+
+@files_router.delete("/{file_id}", summary="删除未绑定消息的文件")
+def delete_file(file_id: str):
+    conn = get_app_db()
+    try:
+        linked = conn.execute(
+            "SELECT 1 FROM message_attachments WHERE file_id = ?", (file_id,)
+        ).fetchone()
+        if linked:
+            raise HTTPException(409, "文件已绑定消息，无法删除")
+        conn.execute("DELETE FROM uploaded_files WHERE file_id = ?", (file_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
