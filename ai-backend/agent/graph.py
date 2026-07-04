@@ -2,7 +2,7 @@
 
 from typing import TypedDict
 
-from langgraph.graph import StateGraph
+from langgraph.graph import StateGraph, START
 
 from agent.nodes import (
     resume_analyst_node,
@@ -32,6 +32,21 @@ class EvalState(TypedDict):
     report: str
 
 
+def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None):
+    """注册四个维度 analyst + report 汇总节点，供 build_eval_graph / build_scoring_graph 共用"""
+    builder.add_node("skill", lambda s: skill_analyst_node(s, model))
+    builder.add_node("project", lambda s: project_analyst_node(s, model))
+    builder.add_node("experience", lambda s: experience_analyst_node(s, model))
+    builder.add_node("education", lambda s: education_analyst_node(s, model))
+    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state))
+
+    builder.add_edge("skill", "report")
+    builder.add_edge("project", "report")
+    builder.add_edge("experience", "report")
+    builder.add_edge("education", "report")
+    builder.set_finish_point("report")
+
+
 def build_eval_graph(model, emit_state=None):
     """
     构建并行简历评估工作流。
@@ -50,21 +65,30 @@ def build_eval_graph(model, emit_state=None):
     builder = StateGraph(EvalState)
 
     builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model, emit_state))
-    builder.add_node("skill", lambda s: skill_analyst_node(s, model))
-    builder.add_node("project", lambda s: project_analyst_node(s, model))
-    builder.add_node("experience", lambda s: experience_analyst_node(s, model))
-    builder.add_node("education", lambda s: education_analyst_node(s, model))
-    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state))
+    _wire_scoring_nodes(builder, model, emit_state)
 
     builder.set_entry_point("resume_analyst")
     builder.add_edge("resume_analyst", "skill")
     builder.add_edge("resume_analyst", "project")
     builder.add_edge("resume_analyst", "experience")
     builder.add_edge("resume_analyst", "education")
-    builder.add_edge("skill", "report")
-    builder.add_edge("project", "report")
-    builder.add_edge("experience", "report")
-    builder.add_edge("education", "report")
-    builder.set_finish_point("report")
+
+    return builder.compile()
+
+
+def build_scoring_graph(model, emit_state=None):
+    """
+    跳过 resume_analyst，直接从四个维度 analyst 开始并行打分。
+
+    用于 position 缺失中断后、用户补充岗位续跑评分的场景：此时结构化信息
+    已经从缓存里拿到，不需要再调用一次 LLM 重新提取简历。
+    """
+    builder = StateGraph(EvalState)
+    _wire_scoring_nodes(builder, model, emit_state)
+
+    builder.add_edge(START, "skill")
+    builder.add_edge(START, "project")
+    builder.add_edge(START, "experience")
+    builder.add_edge(START, "education")
 
     return builder.compile()

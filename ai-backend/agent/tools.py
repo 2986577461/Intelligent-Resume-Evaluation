@@ -118,11 +118,16 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 
 
 @tool
-def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None) -> str:
+def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None,
+                   position: str | None = None) -> str:
     """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回json结构化评分报告。
     参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
+    position：仅在"上一次调用本工具提示简历缺少目标岗位、且你已经询问过用户"之后才传入用户回答的岗位名称；
+    正常首次调用不要传这个参数。
 你需要将返回的json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
-当用户要求'分析''评价''打分''评估'时用这个。"""
+当用户要求'分析''评价''打分''评估'时用这个。
+分析完毕后，会返回四个模块的分数以及相关信息，禁止暴露每个模块的总分
+"""
     import os
     runtime = config.get("configurable", {})
     user_id, thread_id = runtime.get("user_id", ""), runtime.get("thread_id", "")
@@ -131,14 +136,36 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
         return "未找到该序号对应的简历文件。"
 
     from langchain.chat_models import init_chat_model
-    from agent.graph import build_eval_graph
+    from agent.graph import build_scoring_graph
+    from agent.nodes import resume_analyst_node
+    from state.manager import get_cache_manager
+
     model = init_chat_model(model=os.getenv("MODEL_NAME", "deepseek-v4-flash"))
     emit = runtime.get("emit_state")
-    graph = build_eval_graph(model, emit)
+    cache = get_cache_manager()
 
-    for s in graph.stream({"resume_text": data["text"]}):
-        if emit and "resume_analyst" in s:
-            emit("简历信息评估中")
+    pending = cache.get_pending_evaluation(data["file_id"])
+    if pending:
+        extraction = pending
+    else:
+        extraction = resume_analyst_node({"resume_text": data["text"]}, model, emit)
+
+    if position:
+        extraction["position"] = position
+
+    if not extraction.get("position"):
+        if not pending:
+            cache.set_pending_evaluation(data["file_id"], extraction)
+        return "缺少position岗位信息"
+
+    if pending:
+        cache.delete_pending_evaluation(data["file_id"])
+
+    if emit:
+        emit("简历信息评估中")
+    graph = build_scoring_graph(model, emit)
+
+    for s in graph.stream(extraction):
         node = s.get("report")
         if node:
             report = node.get("report", "") if isinstance(node, dict) else node

@@ -1,0 +1,10 @@
+{
+  "resume_text": "中国传媒大学（211•本科）\n智能科学与技术\n\n核心能力\n前端工程： Vue3、TypeScript/JavaScript、Pinia/Vuex、Element Plus、Tailwind CSS\n可视化与交互： Echarts、DataV、Canvas 2D、Mapbox、WebSocket\n数据与工具： Python、SQL/MySQL、pandas/sklearn、Git、LaTeX\n证书/奖项： CET-6；中国高校计算机大赛省二、蓝桥杯省二、数学建模省三；校级奖学金两次；大创国家级立项\n学术论文： 低分辨率图像识别方向 EI 会议: 10.1109/ICISE-IE68873.2025.11379336\n\n实习经历\n气象精准防控系统             （重庆）舍特气象            2026.1-2026.4              web 前端\nVue3、JavaScript、Git、CSS、Vuex、DataV、Echarts、Gitee、ONES\n• 业务场景：全市传感器/站台采集数据分析、历史与实时灾情分析、灾害预警，和一点一策灾害响应机制。\n• 点位数据：Mapbox 三维地图中标注站点位置，详情页 Echarts 展示风向等 5 维数据，点位气象变化一目了然\n• 优化与团队：优化点位信息窗格 UI 和视图联动体验，修复字段错配 BUG。搭建 ESLint 校验规则，文档中明确 git 规范。\n• token 鉴权：登陆后 token 注入请求头，基于 token 做登陆时效性校验、组件级权限管理等。\n• 问题发现：发现站点插值算法导致的温度数据异常并及时上报，使该 bug 在上线前被修复。\n\n后台管理系统（气象系统配套）           （重庆）舍特气象            2026.1-2026.4              web 前端\nVue3、TypeScript、Git、CSS、Vuex、Element Plus\n• 权限管理：RBAC 流程可视化，搭配动态菜单树绑定同一个组件 id，统一管理页面和组件，大幅降提升开发效率。\n• 文件管理：接入 minio 文件存取服务与 MS Office 官方 API，实现 PDF 发布-预览-下载流程可视化。\n\n数据管理系统                （重庆）舍特气象            2026.1-2026.4              web 前端\nVue3、JavaScript、Git、CSS、Vuex、Element Plus\n• 列表重构：基于 vue-draggable 实现可拖拽与分级目录表单，针对组件库局限，自研表单索引排序算法。\n• 绘制地图：优化调查范围绘制的地图交互，多地图服务兜底，补充绘制状态、临时退出与操作引导，优化新手体验。\n\n校内项目经历\n多棋类 AI 数字人讲解平台                                          web 前端 + LLM 微调\nNode.js、Vue3、TypeScript、Shad-CN、Canvas、Pinia、Tailwind CSS、Django\n• 业务场景：集成 LLM 解说与 TTS，形成可扩展的“分析-讲解-播报”的棋类游戏教学范式。\n• 棋盘绘制：使用 Canvas 2D 绘制围棋等棋盘，替代 html 原生方案，降低重绘重排频率，使交互更流畅。\n• 组件通信：pinia 状态管理实现棋盘与走子记录、评估曲线、LLM 解说词、TTS 播放联动，使页面信息保持一致。\n• 性能优化：WebSocket 替代 TCP 接收后端广播，将规则校验迁移至 WebWorker 避免阻塞主线程。\n\n山东医保局医保反欺诈监测                                            web 前端 + Python 数据分析\nNode.js、Vue2、JavaScript、ElementUI、CSS、Python、MySQL、pandas、sklearn\n• 业务场景：利用机器学习算法，以医保飞检数据库构建基线模型，检测异常报销数据，预警骗保行为。\n• 预警机制：异常监测页面，根据查询条件，通过 Axios 请求后端分页查询接口，分页器展示结果。\n• 数据图表：Echarts 绘制关键指标图表；DataV 构建全国各城市风险排行模块，使欺诈风险一目了然。\n• 数据分析：协助机器学习模型训练，使用 pandas 根据 MySQL 表字段计算指标均值等训练数据。",
+  "position": "前端开发工程师",
+  "score_tier": "strong",
+  "must_mention": [
+    "中国传媒大学",
+    "气象精准防控系统",
+    "多棋类 AI 数字人讲解平台"
+  ]
+}
