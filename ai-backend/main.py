@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
         pass
 
 
-model = init_chat_model(model="deepseek-v4-flash")
+model = init_chat_model(model="deepseek-v4-flash", max_tokens=4096)
 
 web_search = TavilySearch(
     max_results=3,

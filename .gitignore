@@ -10,3 +10,4 @@
 /ai-backend/**/__pycache__/
 /ai-backend/Dockerfile
 /ai-backend/docker-compose.yml
+/**/.claude/

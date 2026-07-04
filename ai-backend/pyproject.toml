@@ -1,0 +1,7 @@
+[tool.pytest.ini_options]
+markers = [
+    "llm: 需要真实调用 LLM API 的评测（会产生 token 费用），默认不跑，用 -m llm 显式执行",
+    "consistency: 需要多次真实调用 LLM 验证分数稳定性，费用更高，用 -m consistency 显式执行",
+]
+addopts = "-m \"not llm and not consistency\""
+testpaths = ["eval"]

@@ -6,6 +6,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ClearToolUsesEdit, ContextEditingMiddleware
 from langchain_core.messages import AIMessageChunk, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -97,6 +98,13 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             tools=tools or [],
             checkpointer=checkpointer,
             system_prompt=load_system_prompt(),
+            # 简历原文 / 评分报告等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
+            # 超过 token 阈值后自动清理较早的工具结果（只保留最近几条），避免上下文随轮次无限膨胀
+            middleware=[
+                ContextEditingMiddleware(
+                    edits=[ClearToolUsesEdit(trigger=8000, keep=2, placeholder="[已清理，避免重复计费]")],
+                ),
+            ],
         )
         def _emit_state(state: str):
             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=state))
@@ -129,21 +137,20 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         step += 1
                         _thinking.clear()
                     # agent想要调用tool
-                    if chunk.tool_calls or chunk.tool_call_chunks:
-                        if chunk.tool_call_chunks:
-                            tc = chunk.tool_call_chunks[0]
-                            if isinstance(tc, dict):
-                                name = tc.get("name") or ""
-                            else:
-                                name = getattr(tc, "name", "") or ""
-                            if name and name != current_tool_name:
-                                current_tool_name = name
-                                alog.info(step, "tool_call", "调用工具", current_tool_name)
-                                step += 1
+                    if chunk.tool_call_chunks:
+                        tc = chunk.tool_call_chunks[0]
+                        if isinstance(tc, dict):
+                            name = tc.get("name") or ""
+                        else:
+                            name = getattr(tc, "name", "") or ""
+                        if name and name != current_tool_name:
+                            current_tool_name = name
+                            alog.info(step, "tool_call", "调用工具", current_tool_name)
+                            step += 1
 
-                                tool_info = SSE.match_tool(name)
-                                if tool_info:
-                                    loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=tool_info["calling"]))
+                            tool_info = SSE.match_tool(name)
+                            if tool_info:
+                                loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=tool_info["calling"]))
 
                     if chunk.content and not chunk.tool_calls and not chunk.tool_call_chunks:
                         ai_reply_chunks.append(chunk.content)
@@ -163,6 +170,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             _parse_web_results(raw, search_info)
                             results_json = _format_search_results(chunk.content)
                             parsed = json.loads(results_json)
+
                             state_data["results"] = parsed.get("results", [])
 
                         # 持久化 tool 完成状态 + 位置
@@ -179,7 +187,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             error_msg = str(e)
             alog.error(step, "failed", "任务异常", error_msg[:200])
             step += 1
-            loop.call_soon_threadsafe(queue.put_nowait, f"[ERROR] {e}")
+            loop.call_soon_threadsafe(queue.put_nowait, f"{SSE.ERROR} {e}")
         finally:
             try:
                 checkpointer_ctx.__exit__(None, None, None)
@@ -204,7 +212,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         if data is None:
             yield f"data: {SSE.DONE}\n\n"
             break
-        if str(data).startswith("[ERROR]"):
+        if str(data).startswith(SSE.ERROR):
             yield f"data: {data}\n\n"
             break
         yield f"data: {sse_escape(data)}\n\n"

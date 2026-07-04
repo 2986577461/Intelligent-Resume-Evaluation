@@ -118,7 +118,7 @@
               </div>
               <template v-if="msg.role === 'ai'">
                 <div class="msg-body">
-                  <Transition name="fade">
+                  <Transition name="fade" mode="out-in">
                     <div
                       v-if="msg.toolStatus"
                       class="search-link"
@@ -206,25 +206,51 @@
 
           <div class="input-wrap">
             <div v-if="pendingFile.name" class="file-tag-bar">
-              <div class="file-chip" :class="{ 'file-chip-error': pendingFile.error }">
+              <div
+                class="file-chip"
+                :class="{ 'file-chip-error': pendingFile.error }"
+              >
                 <div class="file-chip-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="18" height="18">
-                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                    <polyline points="14 2 14 8 20 8"/>
+                  <svg
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    width="18"
+                    height="18"
+                  >
+                    <path
+                      d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                    />
+                    <polyline points="14 2 14 8 20 8" />
                   </svg>
                 </div>
                 <div class="file-chip-body">
                   <span class="file-chip-name">{{ pendingFile.name }}</span>
                   <span class="file-chip-status">
                     <template v-if="pendingFile.error">上传失败</template>
-                    <template v-else-if="pendingFile.uploading">上传中...</template>
+                    <template v-else-if="pendingFile.uploading"
+                      >上传中...</template
+                    >
                     <template v-else>已就绪</template>
                   </span>
                 </div>
                 <div class="file-chip-right">
-                  <span v-if="pendingFile.uploading" class="spinner-upload"></span>
-                  <svg v-else-if="!pendingFile.error" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="14" height="14" class="file-chip-check">
-                    <polyline points="20 6 9 17 4 12"/>
+                  <span
+                    v-if="pendingFile.uploading"
+                    class="spinner-upload"
+                  ></span>
+                  <svg
+                    v-else-if="!pendingFile.error"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    width="14"
+                    height="14"
+                    class="file-chip-check"
+                  >
+                    <polyline points="20 6 9 17 4 12" />
                   </svg>
                   <button
                     class="file-tag-remove"
@@ -232,8 +258,16 @@
                     title="移除文件"
                     :disabled="pendingFile.uploading"
                   >
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14">
-                      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      width="14"
+                      height="14"
+                    >
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
                     </svg>
                   </button>
                 </div>
@@ -277,7 +311,9 @@
                 <button
                   class="btn-send"
                   @click="send()"
-                  :disabled="loading || !question.trim() || pendingFile.uploading"
+                  :disabled="
+                    loading || !question.trim() || pendingFile.uploading
+                  "
                   title="发送"
                 >
                   <span v-if="loading" class="spinner-sm"></span>
@@ -373,7 +409,12 @@ const toastMsg = ref("");
 const msgBox = ref(null);
 const inputBox = ref(null);
 const fileInput = ref(null);
-const pendingFile = ref({ name: "", uploading: false, fileId: null, error: false });
+const pendingFile = ref({
+  name: "",
+  uploading: false,
+  fileId: null,
+  error: false,
+});
 let es = null;
 let _uploadPromise = null;
 let _uploadToken = 0;
@@ -539,7 +580,12 @@ async function pickFile(file) {
     currentThreadId.value = "session-" + Date.now();
   }
   const token = ++_uploadToken;
-  pendingFile.value = { name: file.name, uploading: true, fileId: null, error: false };
+  pendingFile.value = {
+    name: file.name,
+    uploading: true,
+    fileId: null,
+    error: false,
+  };
   _uploadPromise = uploadFile(file, currentThreadId.value)
     .then((res) => {
       if (_uploadToken !== token) {
@@ -561,7 +607,12 @@ function clearFile() {
   ++_uploadToken;
   _uploadPromise = null;
   const fileId = pendingFile.value.fileId;
-  pendingFile.value = { name: "", uploading: false, fileId: null, error: false };
+  pendingFile.value = {
+    name: "",
+    uploading: false,
+    fileId: null,
+    error: false,
+  };
   if (fileId) _deleteUploadedFile(fileId);
 }
 
@@ -674,7 +725,10 @@ async function send() {
   nextTick(() => scrollBottom());
 
   // 每次新消息重置状态队列，避免上一轮残留干扰
-  if (_statusTimer) { clearTimeout(_statusTimer); _statusTimer = null; }
+  if (_statusTimer) {
+    clearTimeout(_statusTimer);
+    _statusTimer = null;
+  }
   _statusQueue = [];
 
   const aiIdx = messages.value.length;
@@ -696,7 +750,7 @@ async function send() {
   if (hasPending) {
     if (_uploadPromise) await _uploadPromise;
     const fileId = pendingFile.value.fileId;
-    pendingFile.value.fileId = null;  // 阻止 clearFile 触发删除
+    pendingFile.value.fileId = null; // 阻止 clearFile 触发删除
     clearFile();
     if (fileId) {
       url += `&file_id=${fileId}`;
@@ -1096,6 +1150,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
+@property --wipe {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 112%;
+}
 .search-link {
   display: block;
   clear: both;
@@ -1108,21 +1167,25 @@ onUnmounted(() => {
   margin: 12px 0 6px;
   transition: color 0.15s;
   white-space: pre-line;
+  --wipe: 135%;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    black calc(var(--wipe) - 35%),
+    transparent var(--wipe)
+  );
+  mask-image: linear-gradient(
+    to right,
+    black calc(var(--wipe) - 35%),
+    transparent var(--wipe)
+  );
 }
-.fade-enter-active {
-  transition:
-    opacity 0.3s,
-    transform 0.3s;
-}
+.fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.2s;
+  transition: --wipe 0.7s ease-in-out;
 }
-.fade-enter-from {
-  opacity: 0;
-  transform: translateY(-4px);
-}
+.fade-enter-from,
 .fade-leave-to {
-  opacity: 0;
+  --wipe: -35%;
 }
 .search-link .arrow {
   font-size: 12px;

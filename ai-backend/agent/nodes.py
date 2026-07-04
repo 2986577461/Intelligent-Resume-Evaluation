@@ -15,11 +15,17 @@ def _load_prompt(name: str) -> str:
 
 
 def _call_llm(prompt: str, text: str, model) -> dict:
-    """调用 LLM 并解析 JSON 返回"""
-    response = model.invoke([
-        SystemMessage(content=prompt),
-        HumanMessage(content=text),
-    ])
+    """调用 LLM 并解析 JSON 返回。
+
+    这个调用发生在外层对话 agent 的工具执行过程中。LangChain 的回调管理器默认按
+    上下文（contextvars）传播，如果不显式清空 callbacks，这次内部调用的输出会被
+    外层 `agent.stream(..., stream_mode="messages")` 当成对话回复的一部分转发给用户，
+    造成"内部提取结果泄漏成聊天内容"的问题。传空 callbacks + 独立 run_name/tags 隔离掉。
+    """
+    response = model.invoke(
+        [SystemMessage(content=prompt), HumanMessage(content=text)],
+        config={"callbacks": [], "run_name": "multi_agent_internal_call", "tags": ["multi_agent_internal"]},
+    )
     content = response.content.strip()
     if "```json" in content:
         content = content.split("```json")[1].split("```")[0].strip()

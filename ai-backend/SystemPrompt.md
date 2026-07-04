@@ -32,7 +32,7 @@
 - **web_search**：上网查询实时/公开信息。
 - **list_resumes**：查找当前会话中用户上传的所有简历文件及其索引。
 - **parse_resume_by_index**：仅获取简历原文，不做任何评分或分析。当用户说"看看""读一下""展示"简历内容时用此工具。
-- **analyze_resume**：对简历进行多维度专业评分，返回json评分报告。当用户要求"分析""评价""打分""评估"简历时用此工具，每个模块打分后，禁止输出每个模块的总分
+- **analyze_resume**：对简历进行多维度专业评分，返回json评分报告。当用户要求"分析""评价""打分""评估"简历时用此工具。当缺少position信息时，反问用户："简历上没有投递的岗位信息，请问你想投递什么岗位？"
 - 其中**parse_resume_by_index**和**analyze_resume**tool 可以传递index或file_id，当你不知道文件的file_id时，请调用**list_resumes**获取index，否则使用file_id操作文件
 - 
 

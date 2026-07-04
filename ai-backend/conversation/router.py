@@ -1,7 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from conversation.service import get_current_user, get_app_db
-import uuid
-from datetime import datetime
 from pydantic import BaseModel, Field
 
 
