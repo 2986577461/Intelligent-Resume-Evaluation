@@ -31,7 +31,23 @@ def _call_llm(prompt: str, text: str, model) -> dict:
         content = content.split("```json")[1].split("```")[0].strip()
     elif "```" in content:
         content = content.split("```")[1].split("```")[0].strip()
-    return json.loads(content)
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        return {"raw": content}
+
+
+def _call_llm_text(prompt: str, text: str, model) -> str:
+    """调用 LLM 并返回纯文本（不做 JSON 解析），用于 markdown 报告类输出。"""
+    response = model.invoke(
+        [SystemMessage(content=prompt), HumanMessage(content=text)],
+        config={"callbacks": [], "run_name": "multi_agent_internal_call", "tags": ["multi_agent_internal"]},
+    )
+    content = response.content.strip()
+    if content.startswith("```") and content.endswith("```"):
+        content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return content
 
 
 
@@ -44,7 +60,6 @@ def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
         emit_state("提取简历信息中")
     prompt = _load_prompt("resume_analyst.md")
     output = _call_llm(prompt, f"简历文本：\n{resume_text}", model)
-    print(output)
     return output
 
 
@@ -80,6 +95,13 @@ def education_analyst_node(state: dict, model) -> dict:
     return {"education_result": _call_llm(prompt, _analyst_input(state, "education"), model)}
 
 
+def layout_analyst_node(state: dict, model) -> dict:
+    """版式篇幅评估"""
+    prompt = _load_prompt("layout_analyst.md")
+    input_text = json.dumps({"page_count": state.get("page_count", 1)}, ensure_ascii=False, indent=2)
+    return {"layout_result": _call_llm(prompt, input_text, model)}
+
+
 def report_generator_node(state: dict, model, emit_state=None) -> dict:
     """汇总各维度评分生成最终报告"""
     if emit_state:
@@ -89,11 +111,8 @@ def report_generator_node(state: dict, model, emit_state=None) -> dict:
         "project_depth": state.get("project_result", {}),
         "experience": state.get("experience_result", {}),
         "education": state.get("education_result", {}),
+        "layout": state.get("layout_result", {}),
     }
     text = json.dumps(results, ensure_ascii=False, indent=2)
     prompt = _load_prompt("report_generator.md")
-    result = _call_llm(prompt, text, model)
-
-    if isinstance(result, dict) and "raw" not in result:
-        return {"report": json.dumps(result, ensure_ascii=False, indent=2)}
-    return {"report": result.get("raw", text)}
+    return {"report": _call_llm_text(prompt, text, model)}

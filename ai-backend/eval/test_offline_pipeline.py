@@ -31,6 +31,7 @@ REPORT_JSON = json.dumps({
         "project_depth": {"score": 25, "detail": ["示例理由"]},
         "experience": {"score": 12, "detail": ["示例理由"]},
         "education": {"score": 15, "detail": ["示例理由"]},
+        "layout": {"score": 0, "detail": ["页数超过1页，建议缩减到1页"]},
     },
     "strengths": ["示例亮点"],
     "risks": ["示例风险"],
@@ -40,9 +41,9 @@ REPORT_JSON = json.dumps({
 
 
 def test_graph_wiring_produces_valid_report():
-    """四个并行 analyst 的返回 shape 完全一致，与并行执行顺序无关"""
+    """五个并行 analyst 的返回 shape 完全一致，与并行执行顺序无关"""
     fake_model = FakeListChatModel(responses=[
-        RESUME_EXTRACT_JSON, ANALYST_JSON, ANALYST_JSON, ANALYST_JSON, ANALYST_JSON, REPORT_JSON,
+        RESUME_EXTRACT_JSON, ANALYST_JSON, ANALYST_JSON, ANALYST_JSON, ANALYST_JSON, ANALYST_JSON, REPORT_JSON,
     ])
     graph = build_eval_graph(fake_model)
 
@@ -54,7 +55,7 @@ def test_graph_wiring_produces_valid_report():
 
     assert report_text is not None
     parsed = json.loads(report_text)
-    assert set(parsed["dimensions"].keys()) == {"skill_match", "project_depth", "experience", "education"}
+    assert set(parsed["dimensions"].keys()) == {"skill_match", "project_depth", "experience", "education", "layout"}
     assert parsed["overall_score"] == 60
 
 

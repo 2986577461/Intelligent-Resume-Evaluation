@@ -8,6 +8,7 @@ DIMENSION_WEIGHTS = {
     "project_depth": 35,
     "experience": 20,
     "education": 35,
+    "layout": 5,
 }
 
 

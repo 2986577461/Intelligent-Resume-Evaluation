@@ -92,11 +92,16 @@ def init_app_db():
                      thread_id      TEXT DEFAULT '',
                      created_at     TEXT NOT NULL,
                      content        BLOB,
-                     extracted_text TEXT
+                     extracted_text TEXT,
+                     page_count     INTEGER DEFAULT 1
                  )
                  """)
     try:
         conn.execute("ALTER TABLE uploaded_files ADD COLUMN extracted_text TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE uploaded_files ADD COLUMN page_count INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
     conn.execute("""
@@ -193,14 +198,15 @@ def save_ai_message(thread_id: str, content: str, search_info: dict | None, user
 
 
 def save_file_meta(file_id: str, filename: str, char_count: int, thread_id: str,
-                   user_id: str, content: bytes | None = None, extracted_text: str = ""):
+                   user_id: str, content: bytes | None = None, extracted_text: str = "",
+                   page_count: int = 1):
     conn = get_app_db()
     try:
         now = datetime.now().isoformat()
         conn.execute(
-            "INSERT INTO uploaded_files (file_id, filename, char_count, user_id, created_at, content, thread_id, extracted_text) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (file_id, filename, char_count, user_id, now, content, thread_id, extracted_text),
+            "INSERT INTO uploaded_files (file_id, filename, char_count, user_id, created_at, content, thread_id, extracted_text, page_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (file_id, filename, char_count, user_id, now, content, thread_id, extracted_text, page_count),
         )
         conn.commit()
     finally:

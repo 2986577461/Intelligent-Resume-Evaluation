@@ -35,4 +35,6 @@
 - **analyze_resume**：对简历进行多维度专业评分，返回json评分报告。当用户要求"分析""评价""打分""评估"简历时用此工具。
 
 **消息格式**
-- 用户发送的问题完整格式为：`{"file_id":file_id,"filename":filename,"question":question}`,如果需要对当前文件操作，直接使用此json内的file_id去操作即可。如果用户的当前问题没有附带文件，则格式为`{"question":question}`
+- 用户发送的问题完整格式为：`{"file_id":file_id,"filename":filename,"question":question}`,如果用户的当前问题没有附带文件，则格式为`{"question":question}`
+
+当调用**parse_resume_by_index**、**analyze_resume**用户消息附带了file_id时,直接使用此file_id调用tool，否则先调用**list_resumes**获取简历索引

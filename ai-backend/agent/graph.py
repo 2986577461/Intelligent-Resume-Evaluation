@@ -11,6 +11,7 @@ from agent.nodes import (
     project_analyst_node,
     experience_analyst_node,
     education_analyst_node,
+    layout_analyst_node,
     report_generator_node,
 )
 from common.logger import get_agent_logger
@@ -26,10 +27,12 @@ class EvalState(TypedDict):
     education: list
     experiences: list
     projects: list
+    page_count: int
     skill_result: dict
     project_result: dict
     experience_result: dict
     education_result: dict
+    layout_result: dict
     report: str
 
 
@@ -46,12 +49,14 @@ def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None):
     builder.add_node("project", lambda s: project_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
     builder.add_node("experience", lambda s: experience_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
     builder.add_node("education", lambda s: education_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
+    builder.add_node("layout", lambda s: layout_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
     builder.add_node("report", lambda s: report_generator_node(s, model, emit_state), retry_policy=_LLM_RETRY_POLICY)
 
     builder.add_edge("skill", "report")
     builder.add_edge("project", "report")
     builder.add_edge("experience", "report")
     builder.add_edge("education", "report")
+    builder.add_edge("layout", "report")
     builder.set_finish_point("report")
 
 
@@ -60,14 +65,15 @@ def build_eval_graph(model, emit_state=None):
     构建并行简历评估工作流。
 
     流程图：
-                   ┌─ skill ─┐
-                   ├─ project┤
-    resume_analyst ─┼─ exp ───┤─ report
-                   └─ edu ───┘
+                   ┌─ skill ───┐
+                   ├─ project──┤
+    resume_analyst ─┼─ exp ─────┤─ report
+                   ├─ edu ─────┤
+                   └─ layout ──┘
 
     执行顺序：
     1. resume_analyst → 提取结构化信息（技能、教育、经验、项目等）
-    2. skill / project / experience / education → 四个维度独立并行评分
+    2. skill / project / experience / education / layout → 五个维度独立并行评分
     3. report → 汇总各维度评分，生成最终报告
     """
     builder = StateGraph(EvalState)
@@ -80,6 +86,7 @@ def build_eval_graph(model, emit_state=None):
     builder.add_edge("resume_analyst", "project")
     builder.add_edge("resume_analyst", "experience")
     builder.add_edge("resume_analyst", "education")
+    builder.add_edge("resume_analyst", "layout")
 
     return builder.compile()
 
@@ -98,5 +105,6 @@ def build_scoring_graph(model, emit_state=None):
     builder.add_edge(START, "project")
     builder.add_edge(START, "experience")
     builder.add_edge(START, "education")
+    builder.add_edge(START, "layout")
 
     return builder.compile()

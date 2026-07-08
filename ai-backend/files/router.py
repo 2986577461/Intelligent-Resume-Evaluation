@@ -50,12 +50,14 @@ async def upload_file(file: UploadFile = File(...),
     if ext == ".pdf":
         try:
             doc = fitz.open(stream=raw, filetype="pdf")
+            page_count = len(doc)
             text = "".join(page.get_text() for page in doc)
             doc.close()
         except Exception as e:
             raise HTTPException(400, f"PDF 解析失败：{e}")
         text = _clean_pdf_text(text)
     else:
+        page_count = 1
         from common.vision_client import extract_text_from_image
         try:
             text = extract_text_from_image(raw, MIME_MAP.get(ext, "image/png"))
@@ -67,7 +69,7 @@ async def upload_file(file: UploadFile = File(...),
 
     file_id = uuid.uuid4().hex[:12]
     save_file_meta(file_id, file.filename, len(text), thread_id, user_id,
-                   content=raw, extracted_text=text.strip())
+                   content=raw, extracted_text=text.strip(), page_count=page_count)
 
     return {"file_id": file_id, "filename": file.filename}
 
