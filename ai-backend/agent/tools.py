@@ -126,7 +126,7 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
     position：仅在"上一次调用本工具提示简历缺少目标岗位、且你已经询问过用户"之后才传入用户回答的岗位名称；
     正常首次调用不要传这个参数。
 你需要将返回的json按照json属性的顺序，美化格式后输出，禁止遗漏任何属性
-当用户要求'分析''评价''打分''评估'时用这个。
+当缺少position信息时，反问用户："简历上没有投递的岗位信息，请问你想投递什么岗位？"
 分析完毕后，会返回四个模块的分数以及相关信息，禁止暴露每个模块的总分
 """
     import os
@@ -141,10 +141,6 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
 
         cache = get_cache_manager()
 
-        completed = cache.get_completed_evaluation(data["file_id"])
-        if completed and (not position or completed.get("position") == position):
-            return f"「{data['filename']}」的评分分析结果：\n\n{completed['report']}"
-
         from langchain.chat_models import init_chat_model
         from agent.graph import build_scoring_graph
         from agent.nodes import resume_analyst_node
@@ -158,14 +154,20 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
         else:
             extraction = resume_analyst_node({"resume_text": data["text"]}, model, emit)
 
+        # 如果走的重试路线就将职位覆盖到简历中
         if position:
             extraction["position"] = position
 
+        # 如果提取简历后发现缺少岗位
         if not extraction.get("position"):
+            # 且缓存中也没有该简历
             if not pending:
+                # 将缺少岗位的简历暂存入redis
                 cache.set_pending_evaluation(data["file_id"], extraction)
             return "缺少position岗位信息"
 
+        # 开始评估简历
+        # 删除缓存
         if pending:
             cache.delete_pending_evaluation(data["file_id"])
 
@@ -178,7 +180,6 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
             if node:
                 report = node.get("report", "") if isinstance(node, dict) else node
                 if report:
-                    cache.set_completed_evaluation(data["file_id"], extraction.get("position", ""), report)
                     return f"「{data['filename']}」的评分分析结果：\n\n{report}"
         return "评分分析失败，请重试。"
     except Exception as e:

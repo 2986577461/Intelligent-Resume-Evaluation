@@ -26,15 +26,6 @@ class CacheManager:
     def delete_pending_evaluation(self, file_id: str):
         self._r.delete(f"{_PENDING_EVAL_PREFIX}{file_id}")
 
-    def set_completed_evaluation(self, file_id: str, position: str, report: str, ttl: int = 3600):
-        """评分跑完后缓存最终报告，用户断线重连后重复触发同一份简历+同一岗位时直接复用，不用重新跑一遍打分子图"""
-        payload = json.dumps({"position": position, "report": report}, ensure_ascii=False)
-        self._r.set(f"{_DONE_EVAL_PREFIX}{file_id}", payload, ex=ttl)
-
-    def get_completed_evaluation(self, file_id: str) -> Optional[dict]:
-        raw = self._r.get(f"{_DONE_EVAL_PREFIX}{file_id}")
-        return json.loads(raw) if raw else None
-
 # 全局单例
 _manager: Optional[CacheManager] = None
 

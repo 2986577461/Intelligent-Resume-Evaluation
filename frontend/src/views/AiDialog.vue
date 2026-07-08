@@ -434,11 +434,16 @@ function _runStatusQueue(msg) {
   dequeue();
 }
 function _setStatus(text, msg) {
+  // “✓ ... completed”这类完成徽章需要在正文开始输出后仍然保留，
+  // 和刷新页面后 _buildMsg 从 search_info.tools 里恢复出的永久徽章行为保持一致
+  msg.toolDone = !!(text && text.startsWith("✓"));
   _statusQueue.push(text);
   _runStatusQueue(msg);
 }
-// 清空状态也走队列，保证排在前面的“完成”提示至少展示一轮再消失
+// 清空状态也走队列，保证排在前面的“完成”提示至少展示一轮再消失；
+// 但如果最后一条状态已经是完成徽章，正文 chunk 到达时不再清空它
 function _clearStatus(msg) {
+  if (msg.toolDone) return;
   _statusQueue.push(null);
   _runStatusQueue(msg);
 }
@@ -454,6 +459,7 @@ function _buildMsg(role, content, searchInfo, file) {
     searchSplitPos: null,
     fileInfo: null,
     toolStatus: "",
+    toolDone: false,
   });
   if (file) {
     m.fileInfo = { fileId: file.id, fileName: file.filename };
@@ -742,6 +748,7 @@ async function send() {
       webOpen: false,
       searchSplitPos: null,
       toolStatus: "",
+      toolDone: false,
     }),
   );
 

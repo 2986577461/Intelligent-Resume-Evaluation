@@ -31,10 +31,8 @@ def _call_llm(prompt: str, text: str, model) -> dict:
         content = content.split("```json")[1].split("```")[0].strip()
     elif "```" in content:
         content = content.split("```")[1].split("```")[0].strip()
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {"raw": content}
+    return json.loads(content)
+
 
 
 def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
@@ -46,6 +44,7 @@ def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
         emit_state("提取简历信息中")
     prompt = _load_prompt("resume_analyst.md")
     output = _call_llm(prompt, f"简历文本：\n{resume_text}", model)
+    print(output)
     return output
 
 
