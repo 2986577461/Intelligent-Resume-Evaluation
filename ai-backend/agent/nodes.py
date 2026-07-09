@@ -114,5 +114,6 @@ def report_generator_node(state: dict, model, emit_state=None) -> dict:
         "layout": state.get("layout_result", {}),
     }
     text = json.dumps(results, ensure_ascii=False, indent=2)
+    print(text)
     prompt = _load_prompt("report_generator.md")
     return {"report": _call_llm_text(prompt, text, model)}

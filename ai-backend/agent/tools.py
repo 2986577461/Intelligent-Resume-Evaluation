@@ -122,11 +122,10 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 @tool
 def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None,
                    position: str | None = None) -> str:
-    """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回json结构化评分报告。
+    """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回markdown评分报告。
     参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
     position：仅在"上一次调用本工具提示简历缺少目标岗位、且你已经询问过用户"之后才传入用户回答的岗位名称,
     正常首次调用不要传这个参数。
-    该工具的结果返回后，直接输出返回结果，禁止输出额外的内容
 """
     import os
     runtime = config.get("configurable", {})
@@ -178,6 +177,7 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
 
         for s in graph.stream(extraction):
             node = s.get("report")
+            print(node)
             if isinstance(node, dict) and node.get("report"):
                 return node["report"]
         return "评分分析失败，请重试。"

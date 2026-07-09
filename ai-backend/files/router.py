@@ -52,7 +52,19 @@ async def upload_file(file: UploadFile = File(...),
             doc = fitz.open(stream=raw, filetype="pdf")
             page_count = len(doc)
             text = "".join(page.get_text() for page in doc)
+            if not text.strip():
+                # 扫描版 PDF 没有文本层，兜底把每页转成图片走 OCR
+                from common.vision_client import extract_text_from_image
+                try:
+                    text = "\n".join(
+                        extract_text_from_image(page.get_pixmap(dpi=200).tobytes("png"), "image/png")
+                        for page in doc
+                    )
+                except Exception as e:
+                    raise HTTPException(400, f"扫描版 PDF OCR 识别失败：{e}")
             doc.close()
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(400, f"PDF 解析失败：{e}")
         text = _clean_pdf_text(text)
