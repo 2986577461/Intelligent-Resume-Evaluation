@@ -39,7 +39,7 @@ class EvalState(TypedDict):
 _LLM_RETRY_POLICY = RetryPolicy(max_attempts=2)
 
 
-def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None):
+def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None, emit_chunk=None):
     """注册四个维度 analyst + report 汇总节点，供 build_eval_graph / build_scoring_graph 共用
 
     每个节点单独配置 retry_policy：某个维度因网络抖动/限流等瞬时错误失败时，
@@ -50,7 +50,8 @@ def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None):
     builder.add_node("experience", lambda s: experience_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
     builder.add_node("education", lambda s: education_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
     builder.add_node("layout", lambda s: layout_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state), retry_policy=_LLM_RETRY_POLICY)
+    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state, emit_chunk),
+                     retry_policy=_LLM_RETRY_POLICY)
 
     builder.add_edge("skill", "report")
     builder.add_edge("project", "report")
@@ -60,7 +61,7 @@ def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None):
     builder.set_finish_point("report")
 
 
-def build_eval_graph(model, emit_state=None):
+def build_eval_graph(model, emit_state=None, emit_chunk=None):
     """
     构建并行简历评估工作流。
 
@@ -78,8 +79,9 @@ def build_eval_graph(model, emit_state=None):
     """
     builder = StateGraph(EvalState)
 
-    builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model, emit_state), retry_policy=_LLM_RETRY_POLICY)
-    _wire_scoring_nodes(builder, model, emit_state)
+    builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model, emit_state),
+                     retry_policy=_LLM_RETRY_POLICY)
+    _wire_scoring_nodes(builder, model, emit_state, emit_chunk)
 
     builder.set_entry_point("resume_analyst")
     builder.add_edge("resume_analyst", "skill")
@@ -91,7 +93,7 @@ def build_eval_graph(model, emit_state=None):
     return builder.compile()
 
 
-def build_scoring_graph(model, emit_state=None):
+def build_scoring_graph(model, emit_state=None, emit_chunk=None):
     """
     跳过 resume_analyst，直接从四个维度 analyst 开始并行打分。
 
@@ -99,7 +101,7 @@ def build_scoring_graph(model, emit_state=None):
     已经从缓存里拿到，不需要再调用一次 LLM 重新提取简历。
     """
     builder = StateGraph(EvalState)
-    _wire_scoring_nodes(builder, model, emit_state)
+    _wire_scoring_nodes(builder, model, emit_state, emit_chunk)
 
     builder.add_edge(START, "skill")
     builder.add_edge(START, "project")

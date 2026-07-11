@@ -50,6 +50,25 @@ def _call_llm_text(prompt: str, text: str, model) -> str:
     return content
 
 
+def _call_llm_stream(prompt: str, text: str, model, on_chunk=None) -> str:
+    """流式调用 LLM，每收到一段增量文本就通过 on_chunk 实时转发，返回拼接后的完整文本。"""
+    pieces = []
+    for chunk in model.stream(
+            [SystemMessage(content=prompt), HumanMessage(content=text)],
+            config={"callbacks": [], "run_name": "multi_agent_internal_call", "tags": ["multi_agent_internal"]},
+    ):
+        delta = chunk.content
+        if not delta:
+            continue
+        pieces.append(delta)
+        if on_chunk:
+            on_chunk(delta)
+
+    content = "".join(pieces).strip()
+    if content.startswith("```") and content.endswith("```"):
+        content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+    return content
+
 
 def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
     """LLM 提取简历结构化信息"""
@@ -102,7 +121,7 @@ def layout_analyst_node(state: dict, model) -> dict:
     return {"layout_result": _call_llm(prompt, input_text, model)}
 
 
-def report_generator_node(state: dict, model, emit_state=None) -> dict:
+def report_generator_node(state: dict, model, emit_state=None, emit_chunk=None) -> dict:
     """汇总各维度评分生成最终报告"""
     if emit_state:
         emit_state("评估报告生成中")
@@ -114,6 +133,9 @@ def report_generator_node(state: dict, model, emit_state=None) -> dict:
         "layout": state.get("layout_result", {}),
     }
     text = json.dumps(results, ensure_ascii=False, indent=2)
-    print(text)
     prompt = _load_prompt("report_generator.md")
-    return {"report": _call_llm_text(prompt, text, model)}
+    if emit_chunk:
+        report = _call_llm_stream(prompt, text, model, emit_chunk)
+    else:
+        report = _call_llm_text(prompt, text, model)
+    return {"report": report}

@@ -119,10 +119,10 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
     return f"文件「{data['filename']}」的内容如下：\n\n{data['text']}"
 
 
-@tool
+@tool(return_direct=True)
 def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None,
                    position: str | None = None) -> str:
-    """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回markdown评分报告。
+    """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回评分报告。
     参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
     position：仅在"上一次调用本工具提示简历缺少目标岗位、且你已经询问过用户"之后才传入用户回答的岗位名称,
     正常首次调用不要传这个参数。
@@ -145,6 +145,7 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
 
         model = init_chat_model(model=os.getenv("MODEL_NAME", "deepseek-v4-flash"), max_tokens=4096)
         emit = runtime.get("emit_state")
+        emit_chunk = runtime.get("emit_chunk")
 
         pending = cache.get_pending_evaluation(data["file_id"])
         if pending:
@@ -173,7 +174,7 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
 
         if emit:
             emit("简历信息评估中")
-        graph = build_scoring_graph(model, emit)
+        graph = build_scoring_graph(model, emit, emit_chunk)
 
         for s in graph.stream(extraction):
             node = s.get("report")

@@ -87,6 +87,9 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
     loop = asyncio.get_running_loop()
     ai_reply_chunks: list[str] = []
     search_info: dict = {}
+    # return_direct=True 的工具（如 analyze_resume）调用完不会再触发一次 LLM 生成，
+    # 工具结果本身就是最终回复，需要在下面的 ToolMessage 分支里手动转发给前端
+    direct_tool_names = {getattr(t, "name", "") for t in (tools or []) if getattr(t, "return_direct", False)}
 
     def run_agent():
         nonlocal ai_reply_chunks
@@ -108,14 +111,24 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         )
         def _emit_state(state: str):
             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=state))
+
+        def _emit_chunk(text: str):
+            # return_direct 工具内部真正流式生成时（如 report_generator 逐 token 输出），
+            # 通过这里把每段增量实时转发给前端，标记 tool_streamed 避免 ToolMessage 分支重复整段推送
+            nonlocal tool_streamed
+            tool_streamed = True
+            ai_reply_chunks.append(text)
+            loop.call_soon_threadsafe(queue.put_nowait, text)
+
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "token": token, "user_id": user_id, "file_id": file_id,
-                             "emit_state": _emit_state}}
+                             "emit_state": _emit_state, "emit_chunk": _emit_chunk}}
         step = 0
         alog.info(step, "user_asking", "用户提问", question)
         step += 1
 
         current_tool_name = ""
+        tool_streamed = False
         _thinking = []
         _last_meta = {}
         try:
@@ -145,6 +158,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             name = getattr(tc, "name", "") or ""
                         if name and name != current_tool_name:
                             current_tool_name = name
+                            tool_streamed = False
                             alog.info(step, "tool_call", "调用工具", current_tool_name)
                             step += 1
 
@@ -182,6 +196,11 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         alog.info(step, "tool_called", str(state_data))
                         step += 1
                         loop.call_soon_threadsafe(queue.put_nowait, SSE.state(**state_data))
+
+                        if _saved_tool_name in direct_tool_names and not tool_streamed:
+                            content = str(chunk.content)
+                            ai_reply_chunks.append(content)
+                            loop.call_soon_threadsafe(queue.put_nowait, content)
                     continue
         except Exception as e:
             error_msg = str(e)
