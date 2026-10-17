@@ -178,7 +178,6 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
 
         for s in graph.stream(extraction):
             node = s.get("report")
-            print(node)
             if isinstance(node, dict) and node.get("report"):
                 return node["report"]
         return "评分分析失败，请重试。"

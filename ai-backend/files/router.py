@@ -11,12 +11,13 @@ from conversation.service import get_current_user, save_file_meta, get_file_cont
 
 files_router = APIRouter(prefix="/api/files", tags=["文件管理"])
 
-IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 MIME_MAP = {
     ".pdf": "application/pdf",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
     ".webp": "image/webp",
 }
 
@@ -41,7 +42,7 @@ async def upload_file(file: UploadFile = File(...),
                       user_id: str = Depends(get_current_user)):
     ext = _ext(file.filename or "")
     if ext not in (".pdf", *IMAGE_EXTS):
-        raise HTTPException(400, "仅支持 PDF 或图片（png/jpg/jpeg/webp）")
+        raise HTTPException(400, "仅支持 PDF 或图片（png/jpg/jpeg/gif/webp）")
 
     raw = await file.read()
     if not raw:

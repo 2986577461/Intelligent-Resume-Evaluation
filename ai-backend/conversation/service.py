@@ -104,6 +104,14 @@ def init_app_db():
         conn.execute("ALTER TABLE uploaded_files ADD COLUMN page_count INTEGER DEFAULT 1")
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN user_id TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE messages ADD COLUMN user_id TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("""
                  CREATE TABLE IF NOT EXISTS message_attachments
                  (

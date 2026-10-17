@@ -3,17 +3,18 @@
 import os
 
 import pytest
-from dotenv import load_dotenv
-from langchain.chat_models import init_chat_model
 
 from agent.graph import build_eval_graph
 from eval.helpers import load_golden_resumes, run_eval_pipeline
 
-load_dotenv()
-
 
 @pytest.fixture(scope="session")
 def real_model():
+    # 离线测试收集阶段不加载 .env，也不依赖真实模型的 SDK。
+    from dotenv import load_dotenv
+    from langchain.chat_models import init_chat_model
+
+    load_dotenv()
     return init_chat_model(model=os.getenv("MODEL_NAME", "deepseek-v4-flash"))
 
 

@@ -1,24 +1,33 @@
-"""MiMo 视觉模型客户端 — 图片简历 OCR 为文本（OpenAI 兼容接口）"""
+"""DeepSeek 视觉模型客户端 — 图片简历 OCR 为文本（OpenAI 兼容接口）"""
 
 import base64
 import os
 
 import httpx
 
-MIMO_BASE_URL = os.getenv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1")
-MIMO_API_KEY = os.getenv("xiaomi_api_key", "")
-MIMO_VISION_MODEL = os.getenv("MIMO_VISION_MODEL", "mimo-v2.5")
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_VISION_MODEL = os.getenv(
+    "DEEPSEEK_VISION_MODEL", "deepseek-v4-flash-vision-exp"
+)
 
 _OCR_PROMPT = "提取这张简历图片中的所有文字，按原始排版顺序输出纯文本，不要添加任何解释或额外内容。"
 
 
 def extract_text_from_image(image_bytes: bytes, mime: str = "image/png") -> str:
-    """调用 MiMo 视觉模型，从图片中提取文本"""
+    """调用 DeepSeek 视觉模型，从图片中提取文本。"""
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError("DEEPSEEK_API_KEY 未配置")
+
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_url = f"data:{mime};base64,{b64}"
 
     payload = {
-        "model": MIMO_VISION_MODEL,
+        "model": DEEPSEEK_VISION_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -30,12 +39,16 @@ def extract_text_from_image(image_bytes: bytes, mime: str = "image/png") -> str:
         ],
     }
     headers = {
-        "Authorization": f"Bearer {MIMO_API_KEY}",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
         "Content-Type": "application/json",
     }
 
     with httpx.Client(timeout=60) as client:
-        resp = client.post(f"{MIMO_BASE_URL}/chat/completions", json=payload, headers=headers)
+        resp = client.post(
+            f"{DEEPSEEK_BASE_URL.rstrip('/')}/chat/completions",
+            json=payload,
+            headers=headers,
+        )
         resp.raise_for_status()
         data = resp.json()
 
