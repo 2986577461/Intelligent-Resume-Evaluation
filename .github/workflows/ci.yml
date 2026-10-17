@@ -54,4 +54,4 @@ jobs:
       - name: Check dependency compatibility
         run: python -m pip check
       - name: Run offline tests (network disabled)
-        run: python -m pytest -v -m "not llm and not consistency" --disable-socket
+        run: python -m pytest -v -m "not llm and not consistency" --disable-socket --allow-unix-socket

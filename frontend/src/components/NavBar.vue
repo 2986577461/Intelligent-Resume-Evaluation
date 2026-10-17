@@ -51,9 +51,9 @@
         <button
           v-else
           class="nav-btn nav-btn-primary"
-          @click="visibleStore.loginOrLogoutButton()"
+          @click="visibleStore.onVisible()"
         >
-          {{ visibleStore.getText }}
+          登录 / 注册
         </button>
       </div>
     </div>
@@ -62,14 +62,14 @@
 </template>
 
 <script setup>
+import { ElMessage } from "element-plus";
 import { ref, onMounted, onUnmounted } from "vue";
-import { useRouter } from "vue-router";
+import { logout } from "@/request/axiosForUser.js";
 import { useUserStore } from "@/stores/user";
 import { useVisibleStore } from "@/stores/visible";
 
 import LoginDialog from "./LoginDialog.vue";
 
-const router = useRouter();
 const userStore = useUserStore();
 const visibleStore = useVisibleStore();
 
@@ -87,11 +87,14 @@ function onScroll() {
   }
 }
 
-function handleLogout() {
-  menuOpen.value = false;
-  localStorage.removeItem("authorization");
-  userStore.clear();
-  router.push("/home");
+async function handleLogout() {
+  try {
+    await logout();
+    // 刷新会关闭 SSE 并清除当前账号的页面会话、附件及消息。
+    window.location.reload();
+  } catch {
+    ElMessage.error("退出失败，请重试");
+  }
 }
 
 onMounted(() => window.addEventListener("scroll", onScroll, { passive: true }));

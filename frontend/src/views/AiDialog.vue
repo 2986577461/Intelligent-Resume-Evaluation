@@ -382,6 +382,7 @@
 <script setup>
 import { ref, reactive, nextTick, onMounted, onUnmounted } from "vue";
 import { useUserStore } from "@/stores/user";
+import { useVisibleStore } from "@/stores/visible";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { marked } from "marked";
 import {
@@ -390,11 +391,13 @@ import {
   deleteConversation,
 } from "@/request/axiosForAi.js";
 import { uploadFile } from "@/request/axiosForFiles.js";
+import { getThis } from "@/request/axiosForUser.js";
 import { RESUME_PREFIX, axiosResumeInstance } from "@/request/axiosInit.js";
 
 const CHAT_STREAM_URL = `${RESUME_PREFIX}/chat-stream`;
 
 const userStore = useUserStore();
+const visibleStore = useVisibleStore();
 const question = ref("");
 const messages = ref([]);
 const loading = ref(false);
@@ -577,13 +580,17 @@ function _deleteUploadedFile(fileId) {
 
 const ACCEPT_RE = /\.(pdf|png|jpe?g|webp)$/i;
 async function pickFile(file) {
+  if (!userStore.condition) {
+    visibleStore.onVisible();
+    return;
+  }
   if (pendingFile.value.uploading) return;
   if (!ACCEPT_RE.test(file.name)) {
     ElMessage.warning("仅支持 PDF 或图片（png/jpg/jpeg/webp）");
     return;
   }
   if (!currentThreadId.value) {
-    currentThreadId.value = "session-" + Date.now();
+    currentThreadId.value = "session-" + crypto.randomUUID();
   }
   const token = ++_uploadToken;
   pendingFile.value = {
@@ -712,11 +719,15 @@ function insertNewline() {
 }
 
 async function send() {
+  if (!userStore.condition) {
+    visibleStore.onVisible();
+    return;
+  }
   const text = question.value.trim();
   if (!text || loading.value || pendingFile.value.uploading) return;
 
   if (!currentThreadId.value) {
-    currentThreadId.value = "session-" + Date.now();
+    currentThreadId.value = "session-" + crypto.randomUUID();
   }
   const hasPending = !!pendingFile.value.name;
   const fileInfo = hasPending ? { fileName: pendingFile.value.name } : null;
@@ -752,8 +763,7 @@ async function send() {
     }),
   );
 
-  const token = localStorage.getItem("authorization") || "";
-  let url = `${CHAT_STREAM_URL}?question=${encodeURIComponent(text)}&thread_id=${currentThreadId.value}&token=${encodeURIComponent(token)}`;
+  let url = `${CHAT_STREAM_URL}?question=${encodeURIComponent(text)}&thread_id=${currentThreadId.value}`;
   if (hasPending) {
     if (_uploadPromise) await _uploadPromise;
     const fileId = pendingFile.value.fileId;
@@ -764,7 +774,7 @@ async function send() {
       if (fileInfo) fileInfo.fileId = fileId;
     }
   }
-  const evtSource = new EventSource(url);
+  const evtSource = new EventSource(url, { withCredentials: true });
   es = evtSource;
   evtSource.onmessage = async (e) => {
     const msg = messages.value[aiIdx];
@@ -818,7 +828,7 @@ async function send() {
       nextTick(() => scrollBottom());
     }
   };
-  evtSource.onerror = () => {
+  evtSource.onerror = async () => {
     evtSource.close();
     es = null;
     const msg = messages.value[aiIdx];
@@ -826,11 +836,24 @@ async function send() {
       msg.streaming = false;
     }
     loading.value = false;
+    // EventSource 不暴露 HTTP 状态，单独确认是否是登录会话过期。
+    try {
+      await getThis();
+      ElMessage.error("连接中断，请稍后重试");
+    } catch (error) {
+      if (error.response?.status === 401) {
+        userStore.clear();
+        visibleStore.onVisible();
+        ElMessage.warning("登录已失效，请重新登录");
+      } else {
+        ElMessage.error("连接中断，请稍后重试");
+      }
+    }
   };
 }
 
 onMounted(async () => {
-  await loadConversations();
+  if (userStore.condition) await loadConversations();
   pageLoading.value = false;
   if (conversations.value.length > 0)
     switchConversation(conversations.value[0].thread_id);

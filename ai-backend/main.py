@@ -10,7 +10,6 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langchain.chat_models import init_chat_model
 from langchain_tavily import TavilySearch
@@ -18,6 +17,7 @@ from langchain_tavily import TavilySearch
 load_dotenv()
 
 # ---- 导入路由 ----
+from auth.router import auth_router
 from conversation.router import conversation_router
 from agent.router import agent_router
 from files.router import files_router
@@ -67,17 +67,12 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.include_router(auth_router)
 app.include_router(conversation_router)
 app.include_router(agent_router)
 app.include_router(files_router)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+# 前端开发通过 Vite 代理、生产通过同源反向代理访问，不开放跨域凭证。
 
 
 @app.get("/", response_class=FileResponse)

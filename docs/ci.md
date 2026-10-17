@@ -11,9 +11,9 @@
 | `Frontend build` | Node.js 24 / Ubuntu | 根据 `frontend/package-lock.json` 执行 `npm ci`，再执行 `npm run build` |
 | `Backend offline tests` | Python 3.12 / Ubuntu | 安装 `ai-backend/requirements-ci.txt`，检查依赖兼容性，再运行不带 `llm`、`consistency` 标记的 pytest 测试 |
 
-后端通过 `pytest-socket --disable-socket` 禁止测试创建网络 socket。离线测试收集阶段不读取 `.env`、不初始化真实模型，并关闭 LangSmith tracing；不需要模型密钥、数据库服务或线上环境。
+后端通过 `pytest-socket --disable-socket --allow-unix-socket` 禁止 TCP/IP 网络连接（仅允许测试客户端事件循环使用本地 Unix socket）。离线测试收集阶段不读取 `.env`、不初始化真实模型，并关闭 LangSmith tracing；不需要模型密钥、数据库服务或线上环境。
 
-Python CI 依赖单独锁定，包含离线测试所需的直接和传递依赖，不安装运行完整服务所需的向量库、嵌入模型或真实模型 SDK。**这项检查不能替代完整服务启动验证，也不代表生产环境依赖已经锁定。** 前端目前检查构建，不包含单元测试或浏览器端测试。
+Python CI 依赖单独锁定，包含离线评测及账号/文件 API 测试所需的直接和传递依赖，不安装运行完整服务所需的向量库、嵌入模型或真实模型 SDK。**这项检查不能替代完整服务启动验证，也不代表生产环境依赖已经锁定。** 前端目前检查构建，不包含单元测试或浏览器端测试。
 
 ## 本地复现
 
@@ -34,7 +34,7 @@ cd ai-backend
 python -m pip install -r requirements-ci.txt
 python -m pip check
 LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false \
-  python -m pytest -v -m "not llm and not consistency" --disable-socket
+  python -m pytest -v -m "not llm and not consistency" --disable-socket --allow-unix-socket
 ```
 
 新增普通离线测试会自动纳入 CI。需要真实模型的评测必须标记 `llm` 或 `consistency`，不会在此 CI 中执行；手动执行这些评测前，需要另行安装完整应用依赖并配置模型密钥。
@@ -52,7 +52,7 @@ pip-compile --strip-extras --output-file=requirements-ci.txt requirements-ci.in
 # 有意升级所有锁定依赖时，在上一条命令加 --upgrade。
 python -m pip install -r requirements-ci.txt
 python -m pip check
-python -m pytest -v -m "not llm and not consistency" --disable-socket
+python -m pytest -v -m "not llm and not consistency" --disable-socket --allow-unix-socket
 ```
 
 同时提交 `.in` 和 `.txt`。运行时依赖仍维护在 `requirements.txt`，这份 CI 锁文件不用于生产部署。

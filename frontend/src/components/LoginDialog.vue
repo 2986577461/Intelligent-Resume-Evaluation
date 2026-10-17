@@ -1,47 +1,33 @@
 <template>
-  <div
-    class="modal-overlay"
-    v-if="visibleStore.visible"
-    @click.self="visibleStore.offVisible()"
-  >
-    <div class="modal-card">
-      <button class="modal-close" @click="visibleStore.offVisible()">
-        <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-          <path
-            d="M4 4l10 10M14 4L4 14"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-          />
-        </svg>
-      </button>
-      <h2 class="dialog-title">IT之家协会</h2>
-      <p class="dialog-subtitle">登录账户</p>
-      <form @submit.prevent="handleSubmit" class="dialog-form">
+  <div v-if="visibleStore.visible" class="modal-overlay" @click.self="visibleStore.offVisible()">
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
+      <button class="modal-close" aria-label="关闭" @click="visibleStore.offVisible()">×</button>
+      <h2 id="account-title" class="dialog-title">智能简历评估</h2>
+      <p class="dialog-subtitle">{{ isRegister ? "使用邮箱创建账号" : "邮箱登录" }}</p>
+      <form class="dialog-form" @submit.prevent="handleSubmit">
         <div class="form-field">
-          <label>学号</label>
-          <input
-            v-model="studentId"
-            type="text"
-            placeholder="请输入学号"
-            required
-          />
+          <label for="account-email">邮箱</label>
+          <input id="account-email" v-model="email" type="email" autocomplete="email"
+            maxlength="254" placeholder="you@example.com" required />
         </div>
         <div class="form-field">
-          <label>密码</label>
-          <input
-            v-model="password"
-            type="password"
-            placeholder="请输入密码"
-            required
-          />
+          <label for="account-password">密码</label>
+          <input id="account-password" v-model="password" type="password"
+            :autocomplete="isRegister ? 'new-password' : 'current-password'"
+            :minlength="isRegister ? 12 : 1" maxlength="128"
+            :placeholder="isRegister ? '请输入 12–128 位密码' : '请输入密码'" required />
         </div>
-        <button
-          type="submit"
-          class="btn-primary dialog-submit"
-          :disabled="loading"
-        >
-          {{ loading ? "登录中..." : "登录" }}
+        <div v-if="isRegister" class="form-field">
+          <label for="account-confirm">确认密码</label>
+          <input id="account-confirm" v-model="confirmation" type="password"
+            autocomplete="new-password" minlength="12" maxlength="128" placeholder="再次输入密码" required />
+        </div>
+        <p v-if="isRegister" class="account-hint">当前不发送验证邮件，请确认邮箱填写正确。</p>
+        <button type="submit" class="btn-primary dialog-submit" :disabled="loading">
+          {{ loading ? "处理中..." : isRegister ? "注册并登录" : "登录" }}
+        </button>
+        <button type="button" class="account-switch" :disabled="loading" @click="toggleMode">
+          {{ isRegister ? "已有账号？去登录" : "没有账号？邮箱注册" }}
         </button>
       </form>
     </div>
@@ -52,35 +38,42 @@
 import { ref } from "vue";
 import { useVisibleStore } from "@/stores/visible";
 import { useUserStore } from "@/stores/user";
-import { login } from "@/request/axiosForUser.js";
+import { login, register } from "@/request/axiosForUser.js";
 import { ElMessage } from "element-plus";
 
 const visibleStore = useVisibleStore();
 const userStore = useUserStore();
-const studentId = ref("");
+const isRegister = ref(false);
+const email = ref("");
 const password = ref("");
+const confirmation = ref("");
 const loading = ref(false);
 
-const handleSubmit = async () => {
-  loading.value = true;
-  const resp = await login({
-    studentId: studentId.value,
-    password: password.value,
-  });
-  if (resp.code === "200") {
-    ElMessage.success("登录成功");
-    localStorage.setItem("authorization", resp.data.token);
-    visibleStore.offVisible();
-    userStore.setUser(resp.data);
-    setTimeout(function () {
-      window.location.reload();
-    }, 800);
-  } else {
-    ElMessage.error("账号或密码错误");
-  }
+function toggleMode() {
+  isRegister.value = !isRegister.value;
+  password.value = "";
+  confirmation.value = "";
+}
 
-  loading.value = false;
-};
+async function handleSubmit() {
+  if (loading.value) return;
+  if (isRegister.value && password.value !== confirmation.value) {
+    ElMessage.warning("两次输入的密码不一致");
+    return;
+  }
+  loading.value = true;
+  try {
+    const submit = isRegister.value ? register : login;
+    const user = await submit({ email: email.value.trim(), password: password.value });
+    userStore.setUser(user);
+    visibleStore.offVisible();
+    window.location.reload();
+  } catch {
+    // 请求拦截器统一展示错误，保留表单便于重试。
+  } finally {
+    loading.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -135,4 +128,6 @@ const handleSubmit = async () => {
   opacity: 0.6;
   cursor: not-allowed;
 }
+.account-hint { font-size: 12px; color: var(--color-text-secondary); margin: 0; }
+.account-switch { border: none; background: transparent; color: var(--color-accent); cursor: pointer; }
 </style>

@@ -1,57 +1,31 @@
 """
-会话管理模块 — 会话 CRUD、消息存储、自动标题生成、JWT 鉴权
+会话管理模块 — 会话 CRUD、消息存储、自动标题生成、本地账号会话
 
 本模块通过 FastAPI APIRouter 注册路由，在 Agent.py 中用 app.include_router() 挂载。
 """
 
 import os
 import sqlite3
-import uuid
 from datetime import datetime
 
-from dotenv import load_dotenv
-from fastapi import APIRouter, HTTPException, Header, Query, Depends
+from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field
 
-load_dotenv()
-
 # ---- 数据库路径 ----
-DB_DIR = os.path.join(os.path.dirname(__file__), "db")
+DB_DIR = os.getenv("APP_DATA_DIR", os.path.join(os.path.dirname(__file__), "db"))
 os.makedirs(DB_DIR, exist_ok=True)
 APP_DB_PATH = os.path.join(DB_DIR, "app.db")
 
 
 # ============================================================
-# 鉴权：委托 business_client 验证 token
+# 本地 Cookie 登录会话
 # ============================================================
-from common.business_client import business_client
-
-
-async def get_current_user(authorization: str = Header(default=""),
-                           token: str = Query(default="")) -> str:
-    """
-    拿着 token 请求业务模块 GET /user/users，取 data.studentId 作为 user_id。
-    FastAPI 支持 async Depends，同步路由也能用。
-    """
-    raw = ""
-    if authorization:
-        raw = authorization
-    elif token:
-        raw = token
-    if not raw:
-        raise HTTPException(401, "请先登录")
-
-    try:
-        result = await business_client.get_user_info(raw)
-    except Exception:
-        raise HTTPException(401, "身份验证失败，请重新登录")
-
-    user_data = (result.get("data") or {}) if isinstance(result, dict) else {}
-    student_id = user_data.get("studentId", "")
-    if not student_id:
-        raise HTTPException(401, "身份验证失败：缺少 studentId")
-
-    return str(student_id)
+def get_current_user(request: Request) -> str:
+    # 延迟导入避免 auth.service 与数据库初始化循环依赖。
+    from auth.service import SESSION_COOKIE, get_session_user
+    from common.security import require_same_origin
+    require_same_origin(request)
+    return get_session_user(request.cookies.get(SESSION_COOKIE, ""))["id"]
 
 
 # ============================================================
@@ -150,8 +124,9 @@ class CreateConversationRequest(BaseModel):
 def ensure_conversation_and_save_user(thread_id: str, question: str, user_id: str) -> tuple[str, int]:
     """
     确保会话记录存在 + 保存用户消息，返回 (最终的 thread_id, 用户消息 id)。
-    若 thread_id 存在但归其他用户，自动分配新 id 避免数据泄露。
+    已有会话必须归当前账号所有。
     """
+    require_thread_access(thread_id, user_id)
     conn = get_app_db()
     try:
         now = datetime.now().isoformat()
@@ -165,12 +140,7 @@ def ensure_conversation_and_save_user(thread_id: str, question: str, user_id: st
                 (thread_id, "新的对话", now, now, user_id),
             )
         elif existing["user_id"] != user_id:
-            thread_id = str(uuid.uuid4())[:8]
-            conn.execute(
-                "INSERT INTO conversations (thread_id, title, created_at, updated_at, user_id) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (thread_id, "新的对话", now, now, user_id),
-            )
+            raise HTTPException(404, "会话不存在")
         else:
             conn.execute(
                 "UPDATE conversations SET updated_at = ? WHERE thread_id = ?",
@@ -221,47 +191,48 @@ def save_file_meta(file_id: str, filename: str, char_count: int, thread_id: str,
         conn.close()
 
 
-def get_extracted_text(file_id: str) -> str | None:
+def require_thread_access(thread_id: str, user_id: str):
+    """新会话允许创建，已有会话/待发送附件不能被其他账号接管。"""
     conn = get_app_db()
     try:
-        row = conn.execute(
-            "SELECT extracted_text FROM uploaded_files WHERE file_id = ?", (file_id,)
+        row = conn.execute("SELECT user_id FROM conversations WHERE thread_id = ?", (thread_id,)).fetchone()
+        foreign_file = conn.execute(
+            "SELECT 1 FROM uploaded_files WHERE thread_id = ? AND user_id != ? LIMIT 1",
+            (thread_id, user_id),
         ).fetchone()
-        return row["extracted_text"] if row else None
+        if (row and row["user_id"] != user_id) or foreign_file:
+            raise HTTPException(404, "会话不存在")
     finally:
         conn.close()
 
 
-def get_filename(file_id: str) -> str | None:
+def get_owned_file(file_id: str, user_id: str):
     conn = get_app_db()
     try:
-        row = conn.execute(
-            "SELECT filename FROM uploaded_files WHERE file_id = ?", (file_id,)
-        ).fetchone()
-        return row["filename"] if row else None
+        row = conn.execute("SELECT * FROM uploaded_files WHERE file_id = ? AND user_id = ?",
+                           (file_id, user_id)).fetchone()
+        if not row:
+            raise HTTPException(404, "文件不存在")
+        return row
     finally:
         conn.close()
 
 
-def get_file_content(file_id: str) -> bytes | None:
-    conn = get_app_db()
-    try:
-        row = conn.execute(
-            "SELECT content FROM uploaded_files WHERE file_id = ?", (file_id,)
-        ).fetchone()
-        return row["content"] if row else None
-    finally:
-        conn.close()
-
+def get_filename(file_id: str, user_id: str) -> str:
+    return get_owned_file(file_id, user_id)["filename"]
 
 
 def save_message_attachment(message_id: int, file_id: str, filename: str):
     conn = get_app_db()
     try:
-        conn.execute(
-            "INSERT INTO message_attachments (message_id, file_id, filename) VALUES (?, ?, ?)",
-            (message_id, file_id, filename),
-        )
+        cur = conn.execute("""
+            INSERT INTO message_attachments (message_id, file_id, filename)
+            SELECT m.id, f.file_id, f.filename FROM messages m JOIN uploaded_files f
+              ON f.user_id = m.user_id AND f.thread_id = m.thread_id
+            WHERE m.id = ? AND f.file_id = ?
+        """, (message_id, file_id))
+        if cur.rowcount != 1:
+            raise HTTPException(404, "文件不存在")
         conn.commit()
     finally:
         conn.close()
