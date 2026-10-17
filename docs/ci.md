@@ -4,16 +4,19 @@
 
 ## 检查内容
 
-两个任务独立运行：
+三个任务独立运行：
 
 | GitHub 检查名称 | 环境 | 执行内容 |
 | --- | --- | --- |
 | `Frontend build` | Node.js 24 / Ubuntu | 根据 `frontend/package-lock.json` 执行 `npm ci`，再执行 `npm run build` |
 | `Backend offline tests` | Python 3.12 / Ubuntu | 安装 `ai-backend/requirements-ci.txt`，检查依赖兼容性，再运行不带 `llm`、`consistency` 标记的 pytest 测试 |
+| `Deployment helper tests (offline)` | Ubuntu / Python 标准库 | 模拟 SSH，测试连接脚本的安全参数和失败清理，不访问服务器 |
 
 后端通过 `pytest-socket --disable-socket --allow-unix-socket` 禁止 TCP/IP 网络连接（仅允许测试客户端事件循环使用本地 Unix socket）。离线测试收集阶段不读取 `.env`、不初始化真实模型，并关闭 LangSmith tracing；不需要模型密钥、数据库服务或线上环境。
 
 Python CI 依赖单独锁定，包含离线评测及账号/文件 API 测试所需的直接和传递依赖，不安装运行完整服务所需的向量库、嵌入模型或真实模型 SDK。**这项检查不能替代完整服务启动验证，也不代表生产环境依赖已经锁定。** 前端目前检查构建，不包含单元测试或浏览器端测试。
+
+部署辅助脚本的离线测试会模拟 SSH，检查参数校验、固定主机公钥要求和临时凭证清理，不使用 Secrets，也不连接服务器。实际连接检查另见 [docs/cd.md](cd.md)。
 
 ## 本地复现
 

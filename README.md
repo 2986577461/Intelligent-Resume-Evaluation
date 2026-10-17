@@ -171,7 +171,7 @@ python -m pytest -m consistency -v
 
 注意：现有真实模型评测仍按 JSON 报告做结构校验，而当前报告提示词要求 Markdown；运行这部分评测前需要先对齐报告契约，不能把它视为已通过的质量保证。
 
-GitHub Actions 在 push、PR 更新时执行前端构建和后端离线测试，不自动部署。完整说明见 [docs/ci.md](docs/ci.md)。
+GitHub Actions 在 push、PR 更新时执行前端构建、后端离线测试和部署脚本离线测试，不自动部署。完整说明见 [docs/ci.md](docs/ci.md)。
 
 ## 部署注意事项
 
@@ -183,4 +183,4 @@ GitHub Actions 在 push、PR 更新时执行前端构建和后端离线测试，
 - 生产不要使用 `--reload`，不要把 Redis、数据库文件、日志或 `.env` 暴露到公网。
 - 当前只有账号接口的基础限流；公开运营前仍需增加评估配额、上传大小限制和网关限流，控制模型费用及资源滥用。
 
-仓库目前没有统一的自动化部署流程；不要把本地被忽略的 Docker 配置当作新环境的部署前提。
+CD 正在分阶段接入：目前有手动触发的 GitHub Actions → 服务器只读 SSH 连接检查，尚未实现自动发布，配置见 [docs/cd.md](docs/cd.md)。不要把本地被忽略的 Docker 配置当作新环境的部署前提。

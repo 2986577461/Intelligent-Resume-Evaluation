@@ -55,3 +55,14 @@ jobs:
         run: python -m pip check
       - name: Run offline tests (network disabled)
         run: python -m pytest -v -m "not llm and not consistency" --disable-socket --allow-unix-socket
+
+  deployment-helper-tests:
+    name: Deployment helper tests (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Test SSH validation and credential cleanup without connecting
+        run: python3 -m unittest discover -s scripts/cd -p 'test_*.py' -v
