@@ -130,6 +130,10 @@ def tls_ready():
         '--resolve', 'www.myzyitzj.cn:19443:127.0.0.1',
         '--connect-to', 'www.myzyitzj.cn:19443:127.0.0.1:443',
         '--max-time', '12', ORIGIN + '/_tls-health')
+    # The build runner needn't reach production. Verify the public NAT mapping
+    # on the deployment host before touching the running application.
+    run('curl', '--fail', '--silent', '--show-error', '--noproxy', '*',
+        '--connect-timeout', '8', '--max-time', '15', ORIGIN + '/_tls-health')
 
 
 def gateway_health(sha):

@@ -4,14 +4,14 @@
 
 ```text
 手动运行 Build approved release（dev 上明确的提交）
-    → 公网 HTTPS 检查、离线测试、前端构建
+    → 离线测试、前端构建
     → 在 GitHub runner 构建 Linux amd64 后端镜像
     → Redis + 完整后端容器启动冒烟，不调用付费模型
     → 发布带提交 SHA、校验和的 GitHub Release
 服务器 systemd timer（每两分钟，通过本机代理主动访问 GitHub）
     → 核对发布工作流已成功、提交/分支/事件/工作流路径一致
     → 下载并校验 GitHub asset digest + manifest SHA-256
-    → HTTPS 前提检查、部署锁、SQLite 在线备份
+    → 本机证书与公网 HTTPS 映射检查、部署锁、SQLite 在线备份
     → 加载镜像、更新独立 Compose 项目、健康检查
     → 先放静态资源，再原子切换 index.html
     → 失败恢复旧容器和旧 index，不自动倒灌数据库

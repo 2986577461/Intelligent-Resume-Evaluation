@@ -27,8 +27,6 @@ jobs:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: ai-backend/requirements-ci.txt
-      - name: Verify public HTTPS mapping and certificate
-        run: curl --fail --silent --show-error --connect-timeout 15 --max-time 30 https://www.myzyitzj.cn:19443/_tls-health
       - name: Offline tests
         env:
           LANGSMITH_TRACING: 'false'
