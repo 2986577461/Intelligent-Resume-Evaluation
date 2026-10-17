@@ -4,6 +4,8 @@
 The repository is public. No GitHub PAT is stored on the production server.
 """
 import argparse
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
@@ -62,11 +64,16 @@ def download(asset, destination):
     size = asset['size']
     if not 0 < size <= MAX_ASSET:
         raise ValueError('Invalid asset size')
+    if destination.exists() and destination.stat().st_size == size and 'sha256:' + sha256(destination) == expected:
+        return
+    if size > 8 * 1024 * 1024:
+        ranged_download(url, destination, size, expected)
+        return
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(url, timeout=90) as response, destination.open('wb') as target:
+            with urllib.request.urlopen(url, timeout=45) as response, destination.open('wb') as target:
                 count = 0
-                while block := response.read(1024 * 1024):
+                while block := response.read(65536):
                     count += len(block)
                     if count > size:
                         raise ValueError('Asset exceeded declared size')
@@ -78,6 +85,79 @@ def download(asset, destination):
             if attempt == 2:
                 raise
             time.sleep(3)
+
+
+def ranged_download(url, destination, size, expected):
+    """Bounded parallel HTTP ranges; resume private partial files across timer runs."""
+    chunk = 2 * 1024 * 1024
+    parts = destination.with_name(destination.name + '.parts')
+    parts.mkdir(exist_ok=True)
+    ranges = [(start, min(start + chunk, size)) for start in range(0, size, chunk)]
+    # Reuse an interrupted sequential download, never trust it until full SHA256.
+    if destination.exists() and destination.stat().st_size < size:
+        with destination.open('rb') as source:
+            for start, stop in ranges:
+                data = source.read(stop - start)
+                part = parts / str(start)
+                if data and not part.exists():
+                    part.write_bytes(data)
+
+    def fetch(bounds):
+        start, stop = bounds
+        part = parts / str(start)
+        if part.exists() and part.stat().st_size > stop - start:
+            part.unlink()
+        for attempt in range(4):
+            have = part.stat().st_size if part.exists() else 0
+            if have == stop - start:
+                return
+            offset = start + have
+            request = urllib.request.Request(url, headers={
+                'Range': f'bytes={offset}-{stop - 1}', 'Accept-Encoding': 'identity'})
+            try:
+                with urllib.request.urlopen(request, timeout=35) as response:
+                    if response.status != 206 or response.headers.get('Content-Range') != f'bytes {offset}-{stop - 1}/{size}':
+                        raise ValueError('Unexpected HTTP range response')
+                    with part.open('ab') as target:
+                        while block := response.read(65536):
+                            have += len(block)
+                            if have > stop - start:
+                                raise ValueError('Range exceeded expected length')
+                            target.write(block)
+                if have == stop - start:
+                    return
+            except Exception:
+                if attempt == 3:
+                    raise
+                time.sleep(2)
+        raise RuntimeError('Incomplete download range')
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(fetch, ranges))
+    assembled = destination.with_name(destination.name + '.assembled')
+    with assembled.open('wb') as target:
+        for start, stop in ranges:
+            part = parts / str(start)
+            if part.stat().st_size != stop - start:
+                raise ValueError('Range file length mismatch')
+            with part.open('rb') as source:
+                shutil.copyfileobj(source, target)
+    if assembled.stat().st_size != size or 'sha256:' + sha256(assembled) != expected:
+        shutil.rmtree(parts)
+        assembled.unlink(missing_ok=True)
+        destination.unlink(missing_ok=True)
+        raise ValueError('Assembled asset checksum mismatch')
+    assembled.replace(destination)
+    shutil.rmtree(parts)
+
+
+@contextmanager
+def staging_directory(sha):
+    directory = ROOT / 'staging' / sha
+    directory.mkdir(parents=True, exist_ok=True)
+    yield directory
+    # Exceptions leave partial downloads for the next timer invocation.
+    shutil.rmtree(directory)
 
 
 def unpack_frontend(archive, destination):
@@ -277,8 +357,7 @@ def main():
             raise ValueError('Manifest oversized')
         if shutil.disk_usage(ROOT).free < 6 * 1024**3:
             raise RuntimeError('At least 6 GiB free disk is required before deployment')
-        with tempfile.TemporaryDirectory(prefix='stage-', dir=ROOT) as temporary:
-            stage = Path(temporary)
+        with staging_directory(sha) as stage:
             download(assets['manifest.json'], stage / 'manifest.json')
             manifest = json.loads((stage / 'manifest.json').read_text())
             if (manifest['sha'] != sha or manifest['image'] != f'resume-backend:{sha}' or manifest['schema'] != 1):
@@ -308,4 +387,8 @@ if __name__ == '__main__':
     except Exception as error:
         # Requests can contain signed download URLs; never print raw exceptions.
         print('Pull deployment failed:', type(error).__name__, flush=True)
+        if type(error) is RuntimeError:
+            print(str(error), flush=True)
+        if isinstance(error, subprocess.CalledProcessError):
+            print('Failed operation:', ' '.join(str(p) for p in error.cmd[:3]), flush=True)
         raise SystemExit(1)

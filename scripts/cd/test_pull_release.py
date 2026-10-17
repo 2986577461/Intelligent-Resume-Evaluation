@@ -129,5 +129,54 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(any('resume-' + sha[:12] in call for call in calls))
 
 
+
+    def test_parallel_download_resumes_and_verifies_whole_digest(self):
+        data = b'abcd' * (1024 * 1024)
+        destination = self.root / 'image.tar.gz'
+        destination.write_bytes(data[:123456])
+        ranges = []
+
+        def response(request, timeout):
+            value = request.get_header('Range')
+            first, last = map(int, value.removeprefix('bytes=').split('-'))
+            ranges.append((first, last))
+            body = io.BytesIO(data[first:last + 1])
+            body.status = 206
+            body.headers = {'Content-Range': f'bytes {first}-{last}/{len(data)}'}
+            return body
+
+        import hashlib
+        with patch.object(cd.urllib.request, 'urlopen', side_effect=response):
+            cd.ranged_download('https://example.test/blob', destination, len(data),
+                               'sha256:' + hashlib.sha256(data).hexdigest())
+        self.assertEqual(destination.read_bytes(), data)
+        self.assertTrue(any(first == 123456 for first, last in ranges))
+        self.assertFalse(destination.with_name(destination.name + '.parts').exists())
+
+    def test_rejects_server_that_ignores_range(self):
+        def response(request, timeout):
+            body = io.BytesIO(b'not a partial response')
+            body.status = 200
+            body.headers = {}
+            return body
+        with patch.object(cd.urllib.request, 'urlopen', side_effect=response), \
+                patch.object(cd.time, 'sleep'):
+            with self.assertRaises(ValueError):
+                cd.ranged_download('https://example.test/blob', self.root / 'blob', 100,
+                                   'sha256:' + '0' * 64)
+        self.assertFalse((self.root / 'blob').exists())
+
+    def test_failed_download_keeps_cache_but_success_cleans_it(self):
+        with patch.object(cd, 'ROOT', self.root):
+            with self.assertRaises(RuntimeError):
+                with cd.staging_directory('abc') as directory:
+                    (directory / 'partial').write_text('partial')
+                    raise RuntimeError('temporary network failure')
+            self.assertTrue((self.root / 'staging/abc/partial').exists())
+            with cd.staging_directory('abc') as directory:
+                self.assertTrue((directory / 'partial').exists())
+            self.assertFalse((self.root / 'staging/abc').exists())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -10,7 +10,7 @@
     → 发布带提交 SHA、校验和的 GitHub Release
 服务器 systemd timer（每两分钟，通过本机代理主动访问 GitHub）
     → 核对发布工作流已成功、提交/分支/事件/工作流路径一致
-    → 下载并校验 GitHub asset digest + manifest SHA-256
+    → 分段断点下载，并校验 GitHub asset digest + manifest SHA-256
     → 本机证书与公网 HTTPS 映射检查、部署锁、SQLite 在线备份
     → 加载镜像、更新独立 Compose 项目、健康检查
     → 先放静态资源，再原子切换 index.html
@@ -24,7 +24,7 @@
 1. 将审核后的代码推送 `dev`；普通 push/PR 只跑 CI，不部署。
 2. Actions → **Build approved release** → Run workflow → 选择 `dev`。确认选择的是准备上线的提交。
 3. 工作流会生成 `resume-<完整提交SHA>` 的 Release，发布包不含 `.env`、数据库、日志或访问密钥。
-4. 服务器在发布工作流最终成功后自动部署，通常下一次轮询开始处理；下载和启动还需要时间。**Actions 绿色表示产物已发布，不代表服务器已经部署成功。**
+4. 服务器在发布工作流最终成功后自动部署，通常下一次轮询开始处理；下载和启动还需要时间。大镜像分为 2 MiB 分段，最多六路下载，失败保留私有缓存供下次继续，全部完成后仍校验完整 SHA-256。**Actions 绿色表示产物已发布，不代表服务器已经部署成功。**
 5. 核对线上 `/resume/api/health` 的 `version` 与目标 SHA，以及实际页面和登录。
 
 同一个 SHA 的 Release 不覆盖、不重复发布。失败后先排查，修复代码并产生新提交再发布，不通过删除校验或替换已有产物绕过检查。
