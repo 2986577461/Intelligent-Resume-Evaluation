@@ -12,10 +12,9 @@ const publicOrigin = import.meta.env.VITE_PUBLIC_ORIGIN;
 if (import.meta.env.PROD && publicOrigin && window.location.origin !== publicOrigin) {
   window.location.replace(`${publicOrigin}${window.location.pathname}${window.location.search}${window.location.hash}`);
 } else {
-const app = createApp(App);
-app.use(createPinia());
-app.use(router);
-app.use(ElementPlus);
-app.mount("#app");
-
+  const app = createApp(App);
+  app.use(createPinia());
+  app.use(router);
+  app.use(ElementPlus);
+  app.mount("#app");
 }

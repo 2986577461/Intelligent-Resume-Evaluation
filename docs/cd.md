@@ -99,3 +99,15 @@ systemctl enable --now resume-deploy.timer
 ## 第二个项目
 
 这套“可信发布包 + 固定拉取器 + 独立 Compose/数据 + 统一 TLS 入口”的模式可以复用，但当前脚本明确绑定简历项目，尚未抽象为通用平台。第二个项目接入时给它独立发布标记、目录、锁和健康检查，验证后再提取公共代码；不要直接共享数据库或用同一 Compose 项目覆盖服务。
+
+## 首次验收记录（2026-10-18，北京时间）
+
+- 应用版本：`6a5584ed6dfbb3e703ec88226907e0a110ccbcd4`；[发布工作流成功](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/runs/39052468210)，Release 为 `resume-6a5584ed6dfbb3e703ec88226907e0a110ccbcd4`。
+- 后端镜像在 runner 构建并通过 Redis + 完整应用启动测试；线上容器状态 `healthy`，HTTPS `/resume/api/health` 返回同一个 SHA。未调用付费模型接口。
+- 实际验证邮箱注册、Secure/HttpOnly/SameSite Cookie、会话恢复、退出撤销和再次登录；临时测试账号和会话已清理。原 HTTP 代理的账号请求被拒绝。
+- 浏览器实测正式 HTTPS 页面的静态资源、登录弹窗及线上版本检查通过。
+- 初次切换被 Redis 鉴权失败拦截：原环境凭证与当前共享 Redis 不匹配。自动恢复了旧容器的停止状态和旧 index；同步新后端配置后，人工确认重试，同一个不可变发布包部署成功。未修改共享 Redis，也未恢复/覆盖数据库。
+- 这次失败尝试及其 SQLite 备份保存在 `/opt/apps/resume/failed-releases/`，区别于已经按要求删除的旧代理配置备份，不做自动删除。
+- 原数据保留：1 个会话、4 条消息、6 个 Agent checkpoints，两个 SQLite 完整性检查均为 `ok`；没有把旧数据认领给新邮箱账号。
+- 再次轮询返回 `Already deployed`，没有重复重建应用；部署 timer 和证书续期 timer 已启用。
+- 当前安装的 Compose 为官方 `v5.6.0` 插件，未重启 Docker daemon。原 Nginx、Java、Redis、MySQL 容器没有重启。
