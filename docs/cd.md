@@ -14,6 +14,17 @@
 
 这些是当前服务器的一次性接入记录；下面保留新环境接入方法，不要重复覆盖已有配置。
 
+### 2026-10-17 实测结果
+
+- 提交 `86f0409` 的 [CI 已通过](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/runs/39028980195)，三个检查全部成功。
+- [GitHub-hosted runner 连接检查](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/runs/39029015884)执行两次，均在 TCP 连接阶段报 `Connection timed out`，尚未进入主机公钥校验或用户认证。
+- 同一专用密钥从本机连接成功，固定命令限制也已实测；因此不能把 runner 超时归因于私钥错误。
+- 服务器 SSH 在 IPv4/IPv6 的 22 端口监听，UFW 未启用，iptables INPUT 策略为 ACCEPT、无其他 INPUT 规则；对应时间段 SSH 日志未见 runner 到达。未修改这些配置。
+- **尚未确认根因**：需要检查 NAT 公网端口映射的来源限制、服务商侧防火墙或境外链路。不要为此关闭主机密钥校验、扩大 SSH 权限，或未经核实直接放开防火墙。
+- 解决网络入口后，可以直接重新运行同一个工作流；目前不宣称已具备自动发布能力。
+
+
+
 ## 1. 一次性配置连接凭证
 
 仓库 Settings → Environments 中创建 `deployment-check`：
