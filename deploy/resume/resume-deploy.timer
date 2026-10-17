@@ -1,0 +1,8 @@
+[Unit]
+Description=Look for approved resume release every two minutes
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+RandomizedDelaySec=20s
+[Install]
+WantedBy=timers.target

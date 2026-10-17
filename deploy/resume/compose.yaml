@@ -1,0 +1,36 @@
+services:
+  backend:
+    image: ${RESUME_IMAGE:?Set RESUME_IMAGE}
+    container_name: resume-backend
+    restart: unless-stopped
+    env_file:
+      - /opt/apps/resume/shared/backend.env
+    environment:
+      APP_VERSION: ${RESUME_SHA:?Set RESUME_SHA}
+      APP_DATA_DIR: /app/conversation/db
+      SESSION_COOKIE_SECURE: 'true'
+      REQUIRE_HTTPS: 'true'
+      LANGSMITH_TRACING: 'false'
+      LANGCHAIN_TRACING_V2: 'false'
+      TZ: Asia/Shanghai
+    volumes:
+      - /root/resume/data/conversation-db:/app/conversation/db
+      - /root/resume/data/agent-db:/app/agent/db
+      - /opt/apps/resume/shared/logs:/app/common/logs
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1200m
+    cpus: 1.5
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    networks: [ithome_net]
+networks:
+  ithome_net:
+    external: true

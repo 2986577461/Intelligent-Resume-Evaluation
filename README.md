@@ -183,4 +183,4 @@ GitHub Actions 在 push、PR 更新时执行前端构建、后端离线测试和
 - 生产不要使用 `--reload`，不要把 Redis、数据库文件、日志或 `.env` 暴露到公网。
 - 当前只有账号接口的基础限流；公开运营前仍需增加评估配额、上传大小限制和网关限流，控制模型费用及资源滥用。
 
-CD 正在分阶段接入：目前有手动触发的 GitHub Actions → 服务器只读 SSH 连接检查，尚未实现自动发布，配置见 [docs/cd.md](docs/cd.md)。不要把本地被忽略的 Docker 配置当作新环境的部署前提。
+CD 使用 GitHub Actions 手动发布版本包，服务器通过本机代理主动拉取、校验、备份数据库并部署；失败恢复旧容器和页面入口。生产入口为 `https://www.myzyitzj.cn:19443/resume/`，配置和运维见 [docs/cd.md](docs/cd.md)。普通 push/PR 不自动部署。

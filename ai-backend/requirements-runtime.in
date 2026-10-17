@@ -1,0 +1,16 @@
+# Production only. Versions match the locally startup-tested application stack.
+fastapi==0.143.0
+uvicorn==0.54.0
+python-dotenv==1.2.4
+langchain==1.4.5
+langchain-core==1.6.10
+langchain-deepseek==1.1.1
+langchain-openai==1.7.1
+langchain-tavily==0.2.18
+langgraph==1.2.15
+langgraph-checkpoint-sqlite==3.1.2
+redis==8.1.0
+httpx==0.28.1
+pymupdf==1.27.2.3
+python-multipart==0.0.32
+email-validator==2.3.0

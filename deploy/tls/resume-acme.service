@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew resume HTTPS certificate
+Wants=network-online.target resume-proxy.service
+After=network-online.target resume-proxy.service
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/resume-acme-renew
+UMask=0077

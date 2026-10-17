@@ -21,6 +21,7 @@ from auth.router import auth_router
 from conversation.router import conversation_router
 from agent.router import agent_router
 from files.router import files_router
+from common.health import health_router
 
 
 async def _cleanup_orphaned_files():
@@ -67,6 +68,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(conversation_router)
 app.include_router(agent_router)

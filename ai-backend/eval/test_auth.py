@@ -240,3 +240,15 @@ def test_sse_authenticates_cookie_without_query_token(api, monkeypatch):
                                                       "file_id": "other-thread-file"})
     assert rejected.status_code == 404
     assert len(calls) == 1
+
+
+def test_production_rejects_plain_http_auth(api, monkeypatch):
+    monkeypatch.setenv('REQUIRE_HTTPS', 'true')
+    assert api.client.get('/api/auth/me').status_code == 400
+    # Nonstandard public HTTPS port must survive both reverse proxies.
+    response = api.client.get('/api/auth/me', headers={
+        'host': 'www.myzyitzj.cn:19443',
+        'origin': 'https://www.myzyitzj.cn:19443',
+        'x-forwarded-proto': 'https',
+    })
+    assert response.status_code == 401

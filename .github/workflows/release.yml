@@ -1,0 +1,107 @@
+name: Build approved release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: resume-production-release
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: ai-backend/requirements-ci.txt
+      - name: Verify public HTTPS mapping and certificate
+        run: curl --fail --silent --show-error --connect-timeout 15 --max-time 30 https://www.myzyitzj.cn:19443/_tls-health
+      - name: Offline tests
+        env:
+          LANGSMITH_TRACING: 'false'
+          LANGCHAIN_TRACING_V2: 'false'
+        run: |
+          python -m pip install -r ai-backend/requirements-ci.txt
+          python -m pip check
+          (cd ai-backend && python -m pytest -v -m 'not llm and not consistency' --disable-socket --allow-unix-socket)
+          python -m unittest discover -s scripts/cd -p 'test_*.py' -v
+      - name: Build frontend
+        env:
+          VITE_PUBLIC_ORIGIN: https://www.myzyitzj.cn:19443
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build -- --base=/resume/
+      - name: Build production image on runner (not production host)
+        run: docker build --pull -t "resume-backend:$GITHUB_SHA" -f deploy/resume/Dockerfile .
+      - name: Full application startup smoke (no model API calls)
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          docker network create release-smoke
+          docker run -d --name smoke-redis --network release-smoke redis:7-alpine
+          docker run -d --name smoke-backend --network release-smoke \
+            -e REDIS_URL=redis://smoke-redis:6379/0 \
+            -e DEEPSEEK_API_KEY=smoke-not-a-real-key \
+            -e TAVILY_API_KEY=smoke-not-a-real-key \
+            -e SESSION_COOKIE_SECURE=true -e APP_VERSION="$SHA" \
+            -e LANGSMITH_TRACING=false -e LANGCHAIN_TRACING_V2=false \
+            "resume-backend:$SHA"
+          for attempt in $(seq 1 40); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' smoke-backend)
+            if [ "$state" = healthy ]; then break; fi
+            sleep 3
+          done
+          test "$(docker inspect -f '{{.State.Health.Status}}' smoke-backend)" = healthy
+          docker exec smoke-backend python -c "import urllib.request,json; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health'))['version'] == '$SHA'"
+      - name: Package immutable release
+        run: |
+          mkdir bundle
+          docker save "resume-backend:$GITHUB_SHA" | gzip -1 > bundle/backend.tar.gz
+          tar -czf bundle/frontend.tar.gz -C frontend/dist .
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root=Path('bundle')
+          def digest(path):
+              value=hashlib.sha256()
+              with path.open('rb') as source:
+                  for block in iter(lambda: source.read(1024*1024), b''):
+                      value.update(block)
+              return value.hexdigest()
+          manifest={'schema':1,'sha':os.environ['GITHUB_SHA'],
+                    'image':'resume-backend:'+os.environ['GITHUB_SHA'],
+                    'run_id':int(os.environ['GITHUB_RUN_ID']),
+                    'sha256':{name:digest(root/name) for name in ['backend.tar.gz','frontend.tar.gz']}}
+          (root/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
+          PY
+      - name: Publish after all checks pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="resume-$GITHUB_SHA"
+          # Fail on an existing tag/release rather than silently replace artifacts.
+          gh release create "$tag" --target "$GITHUB_SHA" --draft \
+            --title "Resume $GITHUB_SHA" \
+            --notes "Manually approved from dev. Build and startup checks passed. Server independently verifies this workflow's final conclusion." \
+            bundle/manifest.json bundle/backend.tar.gz bundle/frontend.tar.gz
+          gh release edit "$tag" --draft=false --latest
+          echo "Published $tag. Server polls every two minutes; workflow success does not imply deployment success." >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean up smoke containers
+        if: always()
+        run: |
+          docker rm -f smoke-backend smoke-redis 2>/dev/null || true
+          docker network rm release-smoke 2>/dev/null || true
