@@ -7,7 +7,7 @@ import fitz
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from fastapi.responses import Response
 
-from conversation.service import get_current_user, save_file_meta, get_file_content, get_filename, get_app_db
+from conversation.service import get_current_user, save_file_meta, get_owned_file, get_app_db, require_thread_access
 
 files_router = APIRouter(prefix="/api/files", tags=["文件管理"])
 
@@ -40,6 +40,7 @@ def _ext(filename: str) -> str:
 async def upload_file(file: UploadFile = File(...),
                       thread_id: str = Form(),
                       user_id: str = Depends(get_current_user)):
+    require_thread_access(thread_id, user_id)
     ext = _ext(file.filename or "")
     if ext not in (".pdf", *IMAGE_EXTS):
         raise HTTPException(400, "仅支持 PDF 或图片（png/jpg/jpeg/gif/webp）")
@@ -105,17 +106,19 @@ async def cleanup_orphaned(user_id: str = Depends(get_current_user)):
 
 
 @files_router.get("/{file_id}", summary="获取文件原始内容")
-def get_file(file_id: str):
-    content = get_file_content(file_id)
+def get_file(file_id: str, user_id: str = Depends(get_current_user)):
+    row = get_owned_file(file_id, user_id)
+    content = row["content"]
     if content is None:
         raise HTTPException(404, "文件不存在")
-    filename = get_filename(file_id) or ""
+    filename = row["filename"] or ""
     media_type = MIME_MAP.get(_ext(filename), "application/octet-stream")
-    return Response(content=content, media_type=media_type)
+    return Response(content=content, media_type=media_type, headers={"Cache-Control": "private, no-store"})
 
 
 @files_router.delete("/{file_id}", summary="删除未绑定消息的文件")
-def delete_file(file_id: str):
+def delete_file(file_id: str, user_id: str = Depends(get_current_user)):
+    get_owned_file(file_id, user_id)
     conn = get_app_db()
     try:
         linked = conn.execute(
@@ -123,7 +126,7 @@ def delete_file(file_id: str):
         ).fetchone()
         if linked:
             raise HTTPException(409, "文件已绑定消息，无法删除")
-        conn.execute("DELETE FROM uploaded_files WHERE file_id = ?", (file_id,))
+        conn.execute("DELETE FROM uploaded_files WHERE file_id = ? AND user_id = ?", (file_id, user_id))
         conn.commit()
     finally:
         conn.close()

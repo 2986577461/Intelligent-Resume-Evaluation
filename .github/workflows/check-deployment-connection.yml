@@ -1,0 +1,43 @@
+name: Check deployment connection
+
+# Deliberately separate from CI: neither pushes nor PRs may use server credentials.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deployment-connection
+  cancel-in-progress: false
+
+jobs:
+  check-connection:
+    name: Read-only SSH and Docker check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # Configure allowed branches/reviewers before adding environment secrets.
+    environment: deployment-check
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify connection without changing services
+        shell: bash
+        env:
+          CD_SSH_HOST: ${{ secrets.CD_SSH_HOST }}
+          CD_SSH_PORT: ${{ secrets.CD_SSH_PORT }}
+          CD_SSH_USER: ${{ secrets.CD_SSH_USER }}
+          CD_SSH_PRIVATE_KEY: ${{ secrets.CD_SSH_PRIVATE_KEY }}
+          CD_SSH_KNOWN_HOSTS: ${{ secrets.CD_SSH_KNOWN_HOSTS }}
+        run: bash scripts/cd/check-ssh.sh
+      - name: Record result
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo '## Connection verified'
+            echo 'GitHub-hosted runner authenticated over SSH and queried Docker successfully.'
+            echo 'No application was deployed, restarted, or reconfigured.'
+            echo 'This does not yet verify SCP transfers, image loading, HTTPS, or application health.'
+          } >> "$GITHUB_STEP_SUMMARY"

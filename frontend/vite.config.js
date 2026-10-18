@@ -12,10 +12,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      "/user": "http://www.myzyitzj.cn",
-      "/v3/api-docs": "http://localhost:8080",
-      "/api": "http://localhost:8000",
-      "/chat-stream": "http://localhost:8000",
+      // 保留浏览器 Host，让后端同源 Cookie/Origin 校验与开发代理保持一致。
+      "/api": { target: "http://localhost:8000", changeOrigin: false },
+      "/chat-stream": { target: "http://localhost:8000", changeOrigin: false },
       "/download": "http://localhost:8000",
       // Dev: /resume 前缀只在生产用，dev 去掉前缀转发
       "/resume/api": {

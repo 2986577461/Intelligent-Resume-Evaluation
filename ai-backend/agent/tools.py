@@ -1,12 +1,10 @@
 """Agent 工具定义"""
 
-import asyncio
 from datetime import datetime
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from common.business_client import business_client
 from common.logger import get_agent_logger
 from conversation.service import get_app_db
 
@@ -22,7 +20,7 @@ def _get_content_by_file_id_or_index(thread_id: str, file_id: str | None = None,
     if file_id:
         row = conn.execute(
             "SELECT file_id, filename, extracted_text, page_count FROM uploaded_files "
-            "WHERE file_id = ?", (file_id,)
+            "WHERE file_id = ? AND user_id = ? AND thread_id = ?", (file_id, user_id, thread_id)
         ).fetchone()
         rows = [row] if row else []
         conn.close()
@@ -55,28 +53,6 @@ def _get_user_thread(config: RunnableConfig) -> tuple[str, str]:
 
 
 # ── 业务工具 ──
-
-@tool
-def get_user_identity(config: RunnableConfig) -> str:
-    """从协会业务系统获取当前登录用户的信息"""
-    runtime = config.get("configurable", {})
-    token = runtime.get("token", "")
-    if not token:
-        return "未登录，无法获取用户身份"
-
-    async def _fetch():
-        return await business_client.get_user_info(token)
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        result = loop.run_until_complete(_fetch())
-    finally:
-        loop.close()
-    if result.get("code") == "200":
-        return str(result.get("data", {}))
-    return f"获取用户信息失败: {result.get('msg', '未知错误')}"
-
 
 @tool
 def get_current_time() -> str:

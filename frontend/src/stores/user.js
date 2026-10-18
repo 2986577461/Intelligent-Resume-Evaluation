@@ -1,65 +1,26 @@
 import { defineStore } from "pinia";
 
-const AVATARS = [
-  "https://api.dicebear.com/7.x/adventurer-neutral/svg?seed=",
-  "https://api.dicebear.com/7.x/bottts-neutral/svg?seed=",
-  "https://api.dicebear.com/7.x/fun-emoji/svg?seed=",
-  "https://api.dicebear.com/7.x/notionists-neutral/svg?seed=",
-];
-
-function randomAvatar(name) {
-  const style = AVATARS[Math.floor(Math.random() * AVATARS.length)];
-  return style + encodeURIComponent(name || "user");
+// 本地生成默认头像，不向第三方发送邮箱或昵称。
+function defaultAvatar(name) {
+  const initial = name ? Array.from(name)[0].toUpperCase().replace(/[<>&"']/g, "") : "U";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="32" fill="#e0f2fe"/><text x="32" y="42" text-anchor="middle" font-family="sans-serif" font-size="30" fill="#0369a1">${initial}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
 export const useUserStore = defineStore("user", {
-  state: () => ({
-    id: "",
-    studentId: "",
-    name: "",
-    condition: false,
-    position: "",
-    academy: "",
-    sex: "",
-    major: "",
-    className: "",
-    avatar: null,
-  }),
+  state: () => ({ id: "", email: "", name: "", condition: false }),
   getters: {
-    effectiveAvatar(state) {
-      return state.avatar;
-    },
+    effectiveAvatar: (state) => defaultAvatar(state.name),
   },
   actions: {
     clear() {
-      this.id = "";
-      this.studentId = "";
-      this.name = "";
-      this.condition = false;
-      this.position = "";
-      this.academy = "";
-      this.sex = "";
-      this.major = "";
-      this.className = "";
-      this.avatar = null;
-    },
-    setAvatar(url) {
-      this.avatar = url;
+      this.$reset();
     },
     setUser(data) {
-      if (data.id !== undefined) this.id = data.id;
-      if (data.studentId !== undefined) this.studentId = data.studentId;
-      if (data.name !== undefined) this.name = data.name;
-      if (data.position !== undefined) this.position = data.position;
-      if (data.academy !== undefined) this.academy = data.academy;
-      if (data.sex !== undefined) this.sex = data.sex;
-      if (data.major !== undefined) this.major = data.major;
-      if (data.className !== undefined) this.className = data.className;
-      if (data.avatar !== undefined) this.avatar = data.avatar;
+      this.id = data.id;
+      this.email = data.email;
+      this.name = data.name;
       this.condition = true;
-    },
-    getRandomAvatar() {
-      return randomAvatar(this.name);
     },
   },
 });

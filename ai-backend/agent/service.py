@@ -65,7 +65,6 @@ def _parse_web_results(raw: str, info: dict):
 
 
 async def stream_chat(question: str, thread_id: str, user_id: str = "",
-                      token: str = "",
                       model=None, tools: list = None,
                       file_id: str = ""):
     """SSE 流式生成器。model 和 tools 由 main.py 传入。"""
@@ -77,7 +76,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
 
     if file_id:
         from conversation.service import get_filename
-        filename = get_filename(file_id)
+        filename = get_filename(file_id, user_id)
         if filename:
             save_message_attachment(user_msg_id, file_id, filename)
             current_question.update({"file_id":file_id,"filename":filename})
@@ -121,7 +120,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             loop.call_soon_threadsafe(queue.put_nowait, text)
 
         config: RunnableConfig = {
-            "configurable": {"thread_id": thread_id, "token": token, "user_id": user_id, "file_id": file_id,
+            "configurable": {"thread_id": thread_id, "user_id": user_id, "file_id": file_id,
                              "emit_state": _emit_state, "emit_chunk": _emit_chunk}}
         step = 0
         alog.info(step, "user_asking", "用户提问", question)

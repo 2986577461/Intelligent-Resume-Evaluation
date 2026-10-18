@@ -1,7 +1,13 @@
-# Only dependencies used by offline evaluation tests, not the application runtime.
+# Only dependencies used by offline evaluation and API tests, not the full runtime.
 # Regenerate requirements-ci.txt as documented in docs/ci.md.
 langchain-core>=0.3.0,<2
 langgraph>=0.2.0,<2
 pydantic>=2.0.0,<3
 pytest>=8.0.0,<10
 pytest-socket>=0.7.0,<1
+fastapi>=0.110.0,<1
+httpx>=0.27.0,<1
+python-dotenv>=1.0.0,<2
+email-validator>=2.0.0,<3
+python-multipart>=0.0.9,<1
+pymupdf>=1.24.0,<2

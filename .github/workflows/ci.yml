@@ -29,8 +29,10 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
-      - name: Build
-        run: npm run build
+      - name: Build production paths
+        env:
+          VITE_PUBLIC_ORIGIN: https://www.myzyitzj.cn:19443
+        run: npm run build -- --base=/resume/
 
   backend-tests:
     name: Backend offline tests
@@ -54,4 +56,17 @@ jobs:
       - name: Check dependency compatibility
         run: python -m pip check
       - name: Run offline tests (network disabled)
-        run: python -m pytest -v -m "not llm and not consistency" --disable-socket
+        run: python -m pytest -v -m "not llm and not consistency" --disable-socket --allow-unix-socket
+
+  deployment-helper-tests:
+    name: Deployment helper tests (offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check deployment shell syntax
+        run: for script in scripts/cd/*.sh; do bash -n "$script"; done
+      - name: Test SSH validation and credential cleanup without connecting
+        run: python3 -m unittest discover -s scripts/cd -p 'test_*.py' -v

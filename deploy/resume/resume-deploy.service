@@ -1,0 +1,14 @@
+[Unit]
+Description=Pull and deploy approved resume GitHub release
+Wants=network-online.target resume-proxy.service
+After=network-online.target resume-proxy.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/libexec/resume-pull-release
+Environment=HTTPS_PROXY=http://127.0.0.1:7890
+Environment=HTTP_PROXY=http://127.0.0.1:7890
+Environment=NO_PROXY=localhost,127.0.0.1,::1
+# Optional root-only file, containing RESUME_DEPLOY_WEBHOOK_URL=https://...
+EnvironmentFile=-/opt/apps/resume/shared/deploy-notify.env
+UMask=0077
+TimeoutStartSec=25min

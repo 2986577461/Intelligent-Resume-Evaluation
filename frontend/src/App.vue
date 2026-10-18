@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, nextTick } from "vue";
+import { onMounted, nextTick, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useUserStore } from "@/stores/user.js";
 import { getThis } from "@/request/axiosForUser.js";
@@ -7,15 +7,19 @@ import { useScrollReveal } from "@/composables/useScrollReveal.js";
 import NavBar from "@/components/NavBar.vue";
 
 const userStore = useUserStore();
+const authReady = ref(false);
 const router = useRouter();
 const { observe } = useScrollReveal();
 
 onMounted(async () => {
-  if (localStorage.getItem("authorization")) {
-    const resp = await getThis();
-    if (resp.code === "200") {
-      userStore.setUser(resp.data);
-    }
+  // 兼容升级：删除旧外部服务 Token，不再读取或发送它。
+  localStorage.removeItem("authorization");
+  try {
+    userStore.setUser(await getThis());
+  } catch {
+    userStore.clear();
+  } finally {
+    authReady.value = true;
   }
 
   await router.isReady();
@@ -33,7 +37,7 @@ onMounted(async () => {
   <div class="app">
     <NavBar />
     <div id="main-content" class="page-wrap">
-      <router-view v-slot="{ Component }">
+      <router-view v-if="authReady" v-slot="{ Component }">
         <transition name="page">
           <component :is="Component" />
         </transition>
