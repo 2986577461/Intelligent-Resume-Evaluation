@@ -8,7 +8,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    if: github.ref == 'refs/heads/dev'
+    # Development pushes/PRs run CI only; production is manually released from main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     permissions:
@@ -45,26 +46,10 @@ jobs:
           npm run build -- --base=/resume/
       - name: Build production image on runner (not production host)
         run: docker build --pull -t "resume-backend:$GITHUB_SHA" -f deploy/resume/Dockerfile .
-      - name: Full application startup smoke (no model API calls)
+      - name: Isolated HTTPS and business smoke (no model API calls)
         env:
           SHA: ${{ github.sha }}
-        run: |
-          docker network create release-smoke
-          docker run -d --name smoke-redis --network release-smoke redis:7-alpine
-          docker run -d --name smoke-backend --network release-smoke \
-            -e REDIS_URL=redis://smoke-redis:6379/0 \
-            -e DEEPSEEK_API_KEY=smoke-not-a-real-key \
-            -e TAVILY_API_KEY=smoke-not-a-real-key \
-            -e SESSION_COOKIE_SECURE=true -e APP_VERSION="$SHA" \
-            -e LANGSMITH_TRACING=false -e LANGCHAIN_TRACING_V2=false \
-            "resume-backend:$SHA"
-          for attempt in $(seq 1 40); do
-            state=$(docker inspect -f '{{.State.Health.Status}}' smoke-backend)
-            if [ "$state" = healthy ]; then break; fi
-            sleep 3
-          done
-          test "$(docker inspect -f '{{.State.Health.Status}}' smoke-backend)" = healthy
-          docker exec smoke-backend python -c "import urllib.request,json; assert json.load(urllib.request.urlopen('http://127.0.0.1:8000/api/health'))['version'] == '$SHA'"
+        run: bash scripts/cd/smoke-release.sh
       - name: Package immutable release
         run: |
           mkdir bundle
@@ -94,12 +79,12 @@ jobs:
           # Fail on an existing tag/release rather than silently replace artifacts.
           gh release create "$tag" --target "$GITHUB_SHA" --draft \
             --title "Resume $GITHUB_SHA" \
-            --notes "Manually approved from dev. Build and startup checks passed. Server independently verifies this workflow's final conclusion." \
+            --notes "Manually released from main. Build and startup checks passed. Server independently verifies this workflow's final conclusion." \
             bundle/manifest.json bundle/backend.tar.gz bundle/frontend.tar.gz
           gh release edit "$tag" --draft=false --latest
           echo "Published $tag. Server polls every two minutes; workflow success does not imply deployment success." >> "$GITHUB_STEP_SUMMARY"
       - name: Clean up smoke containers
         if: always()
         run: |
-          docker rm -f smoke-backend smoke-redis 2>/dev/null || true
+          docker rm -f smoke-gateway smoke-backend smoke-redis 2>/dev/null || true
           docker network rm release-smoke 2>/dev/null || true

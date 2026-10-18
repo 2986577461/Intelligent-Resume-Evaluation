@@ -1,6 +1,6 @@
 # 智能简历评估
 
-[![CI](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml)
+[![CI](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml)
 
 基于 Vue 3、FastAPI 和 LangGraph 的对话式简历评估项目。上传 PDF 或图片简历后，系统提取简历信息，从技能匹配、项目深度、工作经历、教育背景和排版五个维度并行分析，再以流式 Markdown 输出评估报告和针对性的面试问题。
 
@@ -183,4 +183,6 @@ GitHub Actions 在 push、PR 更新时执行前端构建、后端离线测试和
 - 生产不要使用 `--reload`，不要把 Redis、数据库文件、日志或 `.env` 暴露到公网。
 - 当前只有账号接口的基础限流；公开运营前仍需增加评估配额、上传大小限制和网关限流，控制模型费用及资源滥用。
 
-CD 使用 GitHub Actions 手动发布版本包，服务器通过本机代理主动拉取、校验、备份数据库并部署；失败恢复旧容器和页面入口。生产入口为 `https://www.myzyitzj.cn:19443/resume/`，配置和运维见 [docs/cd.md](docs/cd.md)。普通 push/PR 不自动部署。
+分支流程为 `dev` 日常开发 → PR/CI 合并到 `main` → 从 `main` 手动发布；合并不自动上线。CD 使用 GitHub Actions 手动发布版本包，服务器通过本机代理主动拉取、校验、备份数据库并部署；失败恢复旧容器和页面入口。生产入口为 `https://www.myzyitzj.cn:19443/resume/`，配置和运维见 [docs/cd.md](docs/cd.md)。普通 push/PR 不自动部署。
+
+发布前增加隔离 HTTPS/账号/文件业务冒烟；部署后执行只读页面与资源校验，并记录结构化部署状态，支持可选、去重的 webhook 通知。服务器侧脚本与 systemd 更新需要单独审核安装，详见 [CD 运维文档](docs/cd.md#部署状态和通知)。

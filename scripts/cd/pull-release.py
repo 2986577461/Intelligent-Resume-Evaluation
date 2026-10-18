@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,9 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 ROOT = Path('/opt/apps/resume')
 REPO = '2986577461/Intelligent-Resume-Evaluation'
@@ -26,6 +29,171 @@ ORIGIN = 'https://www.myzyitzj.cn:19443'
 FRONTEND = Path('/root/resume/frontend')
 COMPOSE = ROOT / 'compose.yaml'
 MAX_ASSET = 1_500_000_000
+
+
+def atomic_json(path, value):
+    pending = path.with_suffix('.pending')
+    pending.write_text(json.dumps(value, indent=2) + '\n')
+    pending.chmod(0o600)
+    pending.replace(path)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+class DeploymentReport:
+    """Only allowlisted metadata leaves the host; never exceptions/env/raw logs."""
+    def __init__(self):
+        self.value = {'schema': 1, 'sha': None, 'status': 'running',
+                      'phase': 'discover', 'started_at': time.time(),
+                      'rollback': 'not_needed'}
+
+    def phase(self, name, sha=None):
+        if sha:
+            self.value['sha'] = sha
+            self.value['release_url'] = f'https://github.com/{REPO}/releases/tag/resume-{sha}'
+        self.value['phase'] = name
+        atomic_json(ROOT / 'deployment-status.json', self.value)
+
+    def finish(self, status, error=None):
+        self.value.update(status=status, finished_at=time.time())
+        self.value['duration_seconds'] = round(self.value['finished_at'] - self.value['started_at'], 2)
+        failed = ROOT / 'failed.json'
+        blocked = failed.exists() and json.loads(failed.read_text()).get('sha') == self.value['sha']
+        self.value['retryable'] = status == 'failed' and not blocked
+        self.value['notification'] = 'pending' if os.getenv('RESUME_DEPLOY_WEBHOOK_URL') else 'disabled'
+        if error:
+            self.value['error_type'] = type(error).__name__
+            self.value['error_code'] = safe_error_code(error)
+            if isinstance(error, subprocess.CalledProcessError):
+                self.value['operation_exit_code'] = error.returncode
+        diagnostics = safe_diagnostics() if status == 'failed' else None
+        if diagnostics:
+            self.value['diagnostics'] = diagnostics
+        atomic_json(ROOT / 'deployment-status.json', self.value)
+        self.notify()
+
+    def notify(self):
+        url = os.getenv('RESUME_DEPLOY_WEBHOOK_URL', '')
+        if not url:
+            return
+        # Deduplicate repeated polling failures, but a new success/failure is a new event.
+        key = {k: self.value.get(k) for k in ('sha', 'status', 'phase', 'error_type', 'error_code', 'rollback')}
+        receipt = ROOT / 'notification.json'
+        try:
+            if receipt.exists() and json.loads(receipt.read_text()) == key:
+                self.value['notification'] = 'deduplicated'
+                atomic_json(ROOT / 'deployment-status.json', self.value)
+                return
+            parsed = urlsplit(url)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password or parsed.fragment:
+                raise ValueError('Webhook must use HTTPS')
+            payload = json.dumps({'event': 'resume.deployment', **self.value}).encode()
+            request = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'}, method='POST')
+            # Never forward a webhook token/payload to a redirect destination.
+            with urllib.request.build_opener(NoRedirect()).open(request, timeout=10) as response:
+                if not 200 <= response.status < 300:
+                    raise RuntimeError('Webhook rejected')
+            atomic_json(receipt, key)
+            self.value['notification'] = 'sent'
+        except Exception:
+            # Notification failure must not roll back an otherwise healthy release.
+            self.value['notification'] = 'failed'
+            print('Deployment notification failed; check local webhook configuration.', flush=True)
+        atomic_json(ROOT / 'deployment-status.json', self.value)
+
+
+def retry_notification():
+    path = ROOT / 'deployment-status.json'
+    if not path.exists():
+        return
+    value = json.loads(path.read_text())
+    if value.get('status') in ('succeeded', 'failed') and value.get('notification') in ('failed', 'pending'):
+        report = DeploymentReport()
+        report.value = value
+        report.notify()
+
+
+
+def safe_error_code(error):
+    # Exact known messages map to stable codes; never include unknown error text.
+    codes = {
+        'Backend readiness failed': 'backend_not_ready',
+        'HTTPS upstream is not the new backend': 'gateway_version_mismatch',
+        'Served frontend differs from release': 'frontend_content_mismatch',
+        'Frontend entry asset missing': 'frontend_entry_missing',
+        'Anonymous API access check failed': 'auth_boundary_failed',
+        'Manifest checksum mismatch': 'bundle_checksum_mismatch',
+        'Asset checksum mismatch': 'asset_checksum_mismatch',
+        'Publishing workflow has not completed successfully': 'unapproved_workflow',
+        'Deployment and recovery failed; manual intervention required': 'recovery_failed',
+        'Prior rollback container exists; investigate before next deploy': 'prior_recovery_unresolved',
+    }
+    if str(error) in codes:
+        return codes[str(error)]
+    if isinstance(error, subprocess.CalledProcessError):
+        return 'operation_failed'
+    if isinstance(error, (TimeoutError, subprocess.TimeoutExpired)):
+        return 'timeout'
+    if isinstance(error, urllib.error.URLError):
+        return 'network_error'
+    if isinstance(error, (ValueError, KeyError)):
+        return 'invalid_release'
+    return 'unexpected_error'
+
+def safe_diagnostics():
+    result = {}
+    for name in ('resume-backend', 'resume-backend-rollback'):
+        try:
+            value = container(name)
+            if value:
+                state = value['State']
+                result[name] = {k: state.get(k) for k in ('Status', 'Running', 'ExitCode', 'OOMKilled')}
+                result[name]['health'] = state.get('Health', {}).get('Status')
+        except Exception:
+            result[name] = {'inspection': 'unavailable'}
+    return result
+
+
+class AssetParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.assets = set()
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        value = values.get('src') if tag == 'script' else values.get('href') if tag == 'link' else None
+        if value and value.startswith('/resume/assets/'):
+            path = urlsplit(value).path.removeprefix('/resume/')
+            if '..' in Path(path).parts or not re.fullmatch(r'assets/[A-Za-z0-9_./-]+', path):
+                raise ValueError('Unsafe frontend asset path')
+            self.assets.add(path)
+
+
+def gateway_frontend(source):
+    """Read-only production checks; compare served bytes with the verified bundle."""
+    parser = AssetParser()
+    parser.feed((source / 'index.html').read_text())
+    if not any(path.endswith('.js') for path in parser.assets):
+        raise RuntimeError('Frontend entry asset missing')
+    # Include lazy-loaded chunks (the resume dialog is not in index.html).
+    assets = parser.assets | {str(path.relative_to(source)) for path in (source / 'assets').rglob('*') if path.is_file()}
+    with tempfile.TemporaryDirectory() as directory:
+        target = Path(directory) / 'response'
+        for relative in ('index.html', *sorted(assets)):
+            run('curl', '--fail', '--silent', '--show-error', '--noproxy', '*',
+                '--connect-to', 'www.myzyitzj.cn:19443:127.0.0.1:443', '--max-time', '15',
+                '--output', str(target), ORIGIN + '/resume/' + relative)
+            if sha256(target) != sha256(source / relative):
+                raise RuntimeError('Served frontend differs from release')
+    for path in ('auth/me', 'conversations'):
+        result = run('curl', '--silent', '--show-error', '--noproxy', '*',
+                     '--connect-to', 'www.myzyitzj.cn:19443:127.0.0.1:443', '--max-time', '15',
+                     '--output', '/dev/null', '--write-out', '%{http_code}', ORIGIN + '/resume/api/' + path)
+        if result.stdout != '401':
+            raise RuntimeError('Anonymous API access check failed')
 
 
 def run(*args, check=True, **kwargs):
@@ -255,9 +423,14 @@ def publish_frontend(source):
     pending.replace(FRONTEND / 'index.html')
 
 
-def deploy(stage, manifest):
+def deploy(stage, manifest, report=None):
+    def phase(name):
+        if report:
+            report.phase(name)
+
     sha = manifest['sha']
     image = manifest['image']
+    phase('preflight')
     tls_ready()
     run('docker', 'compose', 'version')
     run('docker', 'network', 'inspect', 'ithome_net')
@@ -268,6 +441,7 @@ def deploy(stage, manifest):
         raise RuntimeError('Prior rollback container exists; investigate before next deploy')
     old_running = bool(previous and previous['State']['Running'])
     old_state = json.loads((ROOT / 'current.json').read_text()) if (ROOT / 'current.json').exists() else None
+    phase('load_image')
     print('Loading verified image.', flush=True)
     run('docker', 'load', '-i', str(stage / 'backend.tar.gz'), timeout=600)
     run('docker', 'image', 'inspect', image)
@@ -278,59 +452,153 @@ def deploy(stage, manifest):
     if (FRONTEND / 'index.html').exists():
         shutil.copyfile(FRONTEND / 'index.html', release / 'previous-index.html')
     try:
+        phase('backup')
         if old_running:
             run('docker', 'stop', '--time', '30', 'resume-backend')
         sqlite_backups(release)
         if previous:
             run('docker', 'rename', 'resume-backend', rollback_name)
+        phase('start_backend')
         run('docker', 'compose', '-p', 'resume-' + sha[:12], '-f', str(COMPOSE), 'up', '-d', '--no-build', '--pull', 'never', env=env)
         print('Waiting for backend readiness.', flush=True)
         wait_healthy('resume-backend', sha)
+        phase('publish_frontend')
         publish_frontend(stage / 'frontend')
+        phase('gateway_smoke')
         gateway_health(sha)
+        gateway_frontend(stage / 'frontend')
         state = dict(manifest, deployed_at=time.time(), previous=old_state)
         # Keep history bounded; don't recursively retain all earlier manifests.
         if state['previous']:
             state['previous'].pop('previous', None)
+        (release / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         pending = ROOT / 'current.pending'
         pending.write_text(json.dumps(state, indent=2) + '\n')
         pending.replace(ROOT / 'current.json')
-        (release / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    except Exception:
-        # Never restore DB files automatically: that could discard accepted writes.
-        # Our first upgrade is additive; incompatible migrations need a separate plan.
-        current = container('resume-backend')
-        if current and current['Config']['Image'] == image:
-            run('docker', 'rm', '-f', 'resume-backend', check=False)
-        if container(rollback_name):
-            run('docker', 'rename', rollback_name, 'resume-backend')
-            if old_running:
+    except Exception as original:
+        # Capture NEW container health before removing it; no raw logs or env.
+        if report:
+            report.value['failure_diagnostics'] = safe_diagnostics()
+            report.value['rollback'] = 'in_progress'
+        # Block this version even if recovery itself fails.
+        atomic_json(ROOT / 'failed.json', manifest)
+        (release / 'FAILED').write_text('Deployment failed; inspect deployment-status.json. DB not restored.\n')
+        try:
+            current = container('resume-backend')
+            if current and current['Config']['Image'] == image:
+                run('docker', 'rm', '-f', 'resume-backend')
+            if container(rollback_name):
+                run('docker', 'rename', rollback_name, 'resume-backend')
+                if old_running:
+                    run('docker', 'start', 'resume-backend')
+            elif old_running and previous and container('resume-backend'):
                 run('docker', 'start', 'resume-backend')
-        elif old_running and previous and container('resume-backend'):
-            run('docker', 'start', 'resume-backend')
-        if (release / 'previous-index.html').exists():
-            shutil.copyfile(release / 'previous-index.html', FRONTEND / '.index.pending')
-            (FRONTEND / '.index.pending').chmod(0o644)
-            (FRONTEND / '.index.pending').replace(FRONTEND / 'index.html')
-        (release / 'FAILED').write_text('Deployment failed; previous container/index restored. DB not restored.\n')
-        # A failure stops automatic retries of the same release until investigated.
-        (ROOT / 'failed.json').write_text(json.dumps(manifest) + '\n')
+            if (release / 'previous-index.html').exists():
+                shutil.copyfile(release / 'previous-index.html', FRONTEND / '.index.pending')
+                (FRONTEND / '.index.pending').chmod(0o644)
+                (FRONTEND / '.index.pending').replace(FRONTEND / 'index.html')
+            if old_running and old_state:
+                wait_healthy('resume-backend', old_state['sha'])
+                gateway_health(old_state['sha'])
+            elif previous:
+                restored = container('resume-backend')
+                if not restored or bool(restored['State']['Running']) != old_running:
+                    raise RuntimeError('Old container state not restored')
+            if report:
+                report.value['rollback'] = 'verified' if old_running and old_state else 'state_restored'
+        except Exception as recovery:
+            if report:
+                report.value['rollback'] = 'failed'
+                report.value['rollback_error_type'] = type(recovery).__name__
+            raise RuntimeError('Deployment and recovery failed; manual intervention required') from original
         raise
-    if container(rollback_name):
-        run('docker', 'rm', rollback_name)
-    # Only remove images recorded in this project's history, never global prune.
-    keep = {image}
-    if old_state:
-        keep.add(old_state['image'])
-    for folder in sorted((ROOT / 'releases').iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[3:]:
-        record = folder / 'manifest.json'
-        if record.exists():
-            old = json.loads(record.read_text())
-            if old['image'] not in keep:
-                run('docker', 'image', 'rm', old['image'], check=False)
-                shutil.rmtree(folder)
+    phase('cleanup')
+    try:
+        if container(rollback_name):
+            run('docker', 'rm', rollback_name)
+        # Only remove images recorded in this project's history, never global prune.
+        keep = {image}
+        if old_state:
+            keep.add(old_state['image'])
+        for folder in sorted((ROOT / 'releases').iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)[3:]:
+            record = folder / 'manifest.json'
+            if record.exists():
+                old = json.loads(record.read_text())
+                if old['image'] not in keep:
+                    run('docker', 'image', 'rm', old['image'], check=False)
+                    shutil.rmtree(folder)
+    except Exception:
+        if report:
+            report.value['cleanup'] = 'failed'
+        print('Release healthy; history cleanup failed, inspect project resources.', flush=True)
     print('Deployment succeeded:', sha, flush=True)
 
+
+class ReleaseBlocked(RuntimeError):
+    """Keep systemd failure visible without overwriting/notifying the same event."""
+
+
+def poll_release(args, report):
+    release = api(f'repos/{REPO}/releases/latest')
+    tag = release['tag_name']
+    if release['draft'] or release['prerelease'] or not re.fullmatch(r'resume-[a-f0-9]{40}', tag):
+        raise ValueError('Latest release is not an approved resume release')
+    sha = tag.removeprefix('resume-')
+    if (ROOT / 'current.json').exists() and json.loads((ROOT / 'current.json').read_text())['sha'] == sha:
+        print('Already deployed:', sha)
+        return
+    if (ROOT / 'failed.json').exists() and json.loads((ROOT / 'failed.json').read_text())['sha'] == sha:
+        print('Release previously failed; manual investigation required:', sha, flush=True)
+        raise ReleaseBlocked('Release previously failed; manual investigation required')
+    if report:
+        report.phase('verify_release', sha)
+    assets = {a['name']: a for a in release['assets']}
+    if not {'manifest.json', 'backend.tar.gz', 'frontend.tar.gz'} <= assets.keys():
+        raise ValueError('Release assets incomplete')
+    if assets['manifest.json']['size'] > 16384:
+        raise ValueError('Manifest oversized')
+    if shutil.disk_usage(ROOT).free < 6 * 1024**3:
+        raise RuntimeError('At least 6 GiB free disk is required before deployment')
+    with staging_directory(sha) as stage:
+        if report:
+            report.phase('download_manifest')
+        download(assets['manifest.json'], stage / 'manifest.json')
+        manifest = json.loads((stage / 'manifest.json').read_text())
+        if (manifest['sha'] != sha or manifest['image'] != f'resume-backend:{sha}' or manifest['schema'] != 1):
+            raise ValueError('Invalid manifest identity')
+        if report:
+            report.phase('verify_workflow')
+        workflow = api(f'repos/{REPO}/actions/runs/{int(manifest["run_id"])}')
+        if (workflow['head_sha'] == sha and workflow['event'] == 'workflow_dispatch' and
+                workflow['head_branch'] == 'main' and workflow['path'] == '.github/workflows/release.yml' and
+                workflow['status'] in ('queued', 'in_progress', 'waiting', 'pending', 'requested')):
+            if report:
+                report.value['status'] = 'waiting'
+                report.phase('waiting_for_workflow')
+            print('Publishing workflow still running; check again next poll.', flush=True)
+            return
+        if not (workflow['head_sha'] == sha and workflow['event'] == 'workflow_dispatch' and
+                workflow['head_branch'] == 'main' and workflow['path'] == '.github/workflows/release.yml' and
+                workflow['status'] == 'completed' and workflow['conclusion'] == 'success'):
+            raise ValueError('Publishing workflow has not completed successfully')
+        print('Approved release:', tag, flush=True)
+        if args.check_only:
+            return
+        for name in ('backend.tar.gz', 'frontend.tar.gz'):
+            if not re.fullmatch('[a-f0-9]{64}', manifest['sha256'][name]):
+                raise ValueError('Invalid manifest checksum')
+            print('Downloading:', name, flush=True)
+            if report:
+                report.phase('download_backend' if name == 'backend.tar.gz' else 'download_frontend')
+            download(assets[name], stage / name)
+            if sha256(stage / name) != manifest['sha256'][name]:
+                raise ValueError('Manifest checksum mismatch')
+        if report:
+            report.phase('unpack')
+        unpack_frontend(stage / 'frontend.tar.gz', stage / 'frontend')
+        deploy(stage, manifest, report)
+        if report:
+            report.finish('succeeded')
 
 def main():
     parser = argparse.ArgumentParser()
@@ -340,45 +608,19 @@ def main():
     ROOT.mkdir(parents=True, exist_ok=True)
     with (ROOT / 'deploy.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        release = api(f'repos/{REPO}/releases/latest')
-        tag = release['tag_name']
-        if release['draft'] or release['prerelease'] or not re.fullmatch(r'resume-[a-f0-9]{40}', tag):
-            raise ValueError('Latest release is not an approved resume release')
-        sha = tag.removeprefix('resume-')
-        if (ROOT / 'current.json').exists() and json.loads((ROOT / 'current.json').read_text())['sha'] == sha:
-            print('Already deployed:', sha)
-            return
-        if (ROOT / 'failed.json').exists() and json.loads((ROOT / 'failed.json').read_text())['sha'] == sha:
-            raise RuntimeError('Release previously failed; manual investigation required')
-        assets = {a['name']: a for a in release['assets']}
-        if not {'manifest.json', 'backend.tar.gz', 'frontend.tar.gz'} <= assets.keys():
-            raise ValueError('Release assets incomplete')
-        if assets['manifest.json']['size'] > 16384:
-            raise ValueError('Manifest oversized')
-        if shutil.disk_usage(ROOT).free < 6 * 1024**3:
-            raise RuntimeError('At least 6 GiB free disk is required before deployment')
-        with staging_directory(sha) as stage:
-            download(assets['manifest.json'], stage / 'manifest.json')
-            manifest = json.loads((stage / 'manifest.json').read_text())
-            if (manifest['sha'] != sha or manifest['image'] != f'resume-backend:{sha}' or manifest['schema'] != 1):
-                raise ValueError('Invalid manifest identity')
-            workflow = api(f'repos/{REPO}/actions/runs/{int(manifest["run_id"])}')
-            if not (workflow['head_sha'] == sha and workflow['event'] == 'workflow_dispatch' and
-                    workflow['head_branch'] == 'dev' and workflow['path'] == '.github/workflows/release.yml' and
-                    workflow['status'] == 'completed' and workflow['conclusion'] == 'success'):
-                raise RuntimeError('Publishing workflow has not completed successfully')
-            print('Approved release:', tag, flush=True)
-            if args.check_only:
-                return
-            for name in ('backend.tar.gz', 'frontend.tar.gz'):
-                if not re.fullmatch('[a-f0-9]{64}', manifest['sha256'][name]):
-                    raise ValueError('Invalid manifest checksum')
-                print('Downloading:', name, flush=True)
-                download(assets[name], stage / name)
-                if sha256(stage / name) != manifest['sha256'][name]:
-                    raise ValueError('Manifest checksum mismatch')
-            unpack_frontend(stage / 'frontend.tar.gz', stage / 'frontend')
-            deploy(stage, manifest)
+        report = None if args.check_only else DeploymentReport()
+        try:
+            if report:
+                retry_notification()
+            poll_release(args, report)
+        except ReleaseBlocked:
+            raise
+        except Exception as error:
+            if report:
+                if report.value['sha'] and isinstance(error, (ValueError, KeyError)):
+                    atomic_json(ROOT / 'failed.json', {'sha': report.value['sha'], 'reason': 'invalid_release'})
+                report.finish('failed', error)
+            raise
 
 
 if __name__ == '__main__':

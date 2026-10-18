@@ -252,3 +252,61 @@ def test_production_rejects_plain_http_auth(api, monkeypatch):
         'x-forwarded-proto': 'https',
     })
     assert response.status_code == 401
+
+
+def test_runner_business_smoke_against_real_routes(api, monkeypatch):
+    """Exercise the runner script offline; Docker/Nginx/TLS are tested at release time."""
+    import importlib.util
+    import io
+    from email.message import Message
+    from pathlib import Path
+    import ssl
+    import urllib.request
+    import urllib.response
+    from fastapi.testclient import TestClient
+
+    path = Path(__file__).resolve().parents[2] / 'scripts/cd/smoke-release.py'
+    spec = importlib.util.spec_from_file_location('release_smoke', path)
+    smoke = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+    monkeypatch.setenv('SESSION_COOKIE_SECURE', 'true')
+    monkeypatch.setenv('REQUIRE_HTTPS', 'true')
+    monkeypatch.setenv('APP_VERSION', 'smoke-sha')
+    monkeypatch.setenv('SHA', 'smoke-sha')
+    monkeypatch.setenv('REDIS_URL', 'redis://smoke-redis:6379/0')
+    monkeypatch.setenv('SMOKE_CA', '/unused/offline-test-ca')
+    source = Path(api.db.APP_DB_PATH).parent / 'frontend'
+    (source / 'assets').mkdir(parents=True)
+    (source / 'index.html').write_bytes(b'<script src="/resume/assets/app.js"></script>')
+    (source / 'assets/app.js').write_bytes(b'console.log("smoke")')
+    (source / 'assets/lazy.js').write_bytes(b'console.log("lazy")')
+    monkeypatch.setenv('SMOKE_FRONTEND', str(source))
+    context = ssl.create_default_context()
+    monkeypatch.setattr(smoke.ssl, 'create_default_context', lambda **kwargs: context)
+
+    with TestClient(api.app, base_url=smoke.ORIGIN) as client:
+        def https_open(handler, request):
+            # No TCP: mimic only the gateway's /resume rewrite and trusted header.
+            route = request.full_url.removeprefix(smoke.ORIGIN + '/resume')
+            if route == '/api/health':
+                from fastapi.responses import JSONResponse
+                response = JSONResponse({'status': 'ok', 'version': 'smoke-sha'})
+                body, status, pairs = response.body, response.status_code, response.headers.items()
+            elif route == '/':
+                body, status, pairs = b'<script src="/resume/assets/app.js"></script>', 200, [('content-type', 'text/html')]
+            elif route.startswith('/assets/'):
+                body, status, pairs = (source / route.lstrip('/')).read_bytes(), 200, [('content-type', 'application/javascript')]
+            else:
+                client.cookies.clear()
+                response = client.request(request.get_method(), route, content=request.data,
+                                          headers={**dict(request.header_items()), 'X-Forwarded-Proto': 'https'})
+                body, status, pairs = response.content, response.status_code, response.headers.multi_items()
+            headers = Message()
+            for key, value in pairs:
+                headers.add_header(key, value)
+            result = urllib.response.addinfourl(io.BytesIO(body), headers, request.full_url, status)
+            result.msg = 'offline smoke'
+            return result
+
+        monkeypatch.setattr(urllib.request.HTTPSHandler, 'https_open', https_open)
+        smoke.main()
