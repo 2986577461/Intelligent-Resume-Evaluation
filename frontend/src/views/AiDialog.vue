@@ -179,16 +179,6 @@
                     class="ai-text"
                     v-html="renderMarkdown(searchAfter(msg))"
                   ></div>
-                  <div v-if="msg.guidance" class="guidance-followup">
-                    <p>文件级指导：{{ guidanceStatus(msg.guidance.status) }}。引用存在不代表经历已核实。</p>
-                    <div v-for="q in (msg.guidance.guidance?.questions || [])" :key="q.id">
-                      <label>{{ q.question }}（{{ q.why }}）</label>
-                      <textarea v-model="msg.answers[q.id]" maxlength="4000" placeholder="仅填写真实信息；不确定可以暂不回答"></textarea>
-                      <label><input type="checkbox" v-model="msg.absences[q.id]" />我确认对应要求尚未做过或掌握（不是仅简历没写）</label>
-                    </div>
-                    <button v-if="msg.guidance.guidance?.questions.length" :disabled="loading" @click="submitGuidance(msg)">提交本文件的补充信息</button>
-                    <button :disabled="loading" @click="selectGuidanceFile(msg.guidance)">选择此文件继续分析</button>
-                  </div>
                   <div class="msg-toolbar" v-if="!msg.streaming">
                     <button class="btn-copy" @click="copyText(msg.text)">
                       <img src="/icons/copy.svg" class="download-icon" alt="" />
@@ -211,21 +201,10 @@
 
           <div class="chat-empty" v-if="!currentThreadId">
             <h3>有什么我可以帮忙的？</h3>
-            <p>上传简历，在「简历指导」确认目标岗位，可选提供 JD，获取有来源的修改建议。也可以普通聊天。</p>
+            <p>可以问我任何问题，我会尽力为你解答。</p>
           </div>
 
           <div class="input-wrap">
-            <details class="guidance-form" :open="!!pendingFile.fileId">
-              <summary>简历指导：确认目标岗位 → 依据与行动（不打分）</summary>
-              <select v-model="guidanceFileId" aria-label="选择分析文件">
-                <option value="">请选择本会话的简历</option>
-                <option v-for="f in guidanceFiles" :key="f.id" :value="f.id">{{ f.name }}</option>
-              </select>
-              <input v-model="targetRole" maxlength="200" placeholder="请确认目标岗位，如：Python 后端实习生" aria-label="确认目标岗位" />
-              <textarea v-model="jobDescription" maxlength="20000" placeholder="可选：粘贴 JD；不提供也可按岗位一般要求分析" aria-label="可选 JD"></textarea>
-              <button :disabled="loading || !guidanceFileId" @click="submitGuidance()">{{ loading ? '处理中，请勿重复提交' : '确认并分析此文件' }}</button>
-              <small>补充回答只绑定所选文件；局部建议不会覆盖原简历。</small>
-            </details>
             <div v-if="pendingFile.name" class="file-tag-bar">
               <div
                 class="file-chip"
@@ -277,7 +256,7 @@
                     class="file-tag-remove"
                     @click="clearFile"
                     title="移除文件"
-                    :disabled="pendingFile.uploading || guidanceBusy"
+                    :disabled="pendingFile.uploading"
                   >
                     <svg
                       viewBox="0 0 24 24"
@@ -298,7 +277,6 @@
               <div class="input-inner">
                 <button
                   class="btn-upload"
-                  :disabled="guidanceBusy"
                   title="上传简历（PDF / 图片）"
                   @click="triggerUpload()"
                 >
@@ -354,7 +332,7 @@
             </div>
           </div>
           <div class="chat-footer">
-            AI 分析可能有误；请核对来源与改写，不代表录用预测。
+            Claude is AI and can make mistakes. Please double-check responses.
           </div>
         </main>
       </template>
@@ -402,7 +380,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, reactive, nextTick, onMounted, onUnmounted } from "vue";
 import { useUserStore } from "@/stores/user";
 import { useVisibleStore } from "@/stores/visible";
 import { ElMessage, ElMessageBox } from "element-plus";
@@ -440,69 +418,6 @@ const pendingFile = ref({
   fileId: null,
   error: false,
 });
-const guidanceBusy = ref(false);
-const guidanceFileId = ref("");
-const targetRole = ref("");
-const jobDescription = ref("");
-const guidanceFiles = computed(() => {
-  const files = new Map();
-  for (const msg of messages.value) {
-    if (msg.fileInfo?.fileId) files.set(msg.fileInfo.fileId, { id: msg.fileInfo.fileId, name: msg.fileInfo.fileName });
-  }
-  if (pendingFile.value.fileId) files.set(pendingFile.value.fileId, { id: pendingFile.value.fileId, name: pendingFile.value.name });
-  return [...files.values()];
-});
-function guidanceStatus(status) {
-  return { success: "分析完成", partial: "可用但不完整", failed: "处理失败", needs_target: "待确认目标岗位" }[status] || status;
-}
-function selectGuidanceFile(result) {
-  guidanceFileId.value = result.file_id;
-  targetRole.value = result.target_role;
-  jobDescription.value = result.sources.filter(s => s.kind === "jd").map(s => s.text).join("\n");
-}
-async function submitGuidance(parentMessage = null) {
-  if (loading.value || !userStore.condition) return;
-  const parent = parentMessage?.guidance;
-  const fileId = parent?.file_id || guidanceFileId.value;
-  if (!fileId) return;
-  const payload = {
-    thread_id: currentThreadId.value,
-    file_id: fileId,
-    target_role: parent ? parent.target_role : targetRole.value.trim(),
-    jd: parent ? parent.sources.filter(s => s.kind === "jd").map(s => s.text).join("\n") : jobDescription.value.trim(),
-    answers: [],
-  };
-  if (parent) {
-    payload.parent_id = parent.id;
-    payload.answers = (parent.guidance?.questions || []).filter(q => parentMessage.answers[q.id]?.trim()).map(q => ({
-      question_id: q.id, text: parentMessage.answers[q.id].trim(), confirms_absence: !!parentMessage.absences[q.id],
-    }));
-    if (!payload.answers.length) { ElMessage.warning("请至少填写一条真实补充信息"); return; }
-  }
-  loading.value = true;
-  guidanceBusy.value = true;
-  // 不使用 EventSource，避免尚未校验结果增量拼接；POST 不自动重试。
-  try {
-    const res = await axiosResumeInstance.post("/api/resume-guidance", payload, { timeout: 120000, silent: true });
-    const f = guidanceFiles.value.find(f => f.id === fileId);
-    messages.value.push(_buildMsg("user", res.user_message, null, { id: fileId, filename: f?.name || "简历" }));
-    messages.value.push(_buildMsg("ai", res.markdown, { guidance: res.result }, null));
-    if (pendingFile.value.fileId === fileId) {
-      pendingFile.value.fileId = null;
-      clearFile();
-    }
-    selectGuidanceFile(res.result);
-    await loadConversations();
-    nextTick(() => scrollBottom());
-  } catch (error) {
-    if (error.response?.status === 401) { userStore.clear(); visibleStore.onVisible(); }
-    const detail = error.response?.data?.detail;
-    ElMessage.error(typeof detail === "string" ? detail : Array.isArray(detail) ? "参数无效，请检查岗位、JD 和补充内容" : "连接失败；底层请求不一定已取消，请稍后刷新历史确认，勿立即重复提交");
-  } finally {
-    loading.value = false;
-    guidanceBusy.value = false;
-  }
-}
 let es = null;
 let _uploadPromise = null;
 let _uploadToken = 0;
@@ -548,9 +463,6 @@ function _buildMsg(role, content, searchInfo, file) {
     fileInfo: null,
     toolStatus: "",
     toolDone: false,
-    guidance: null,
-    answers: {},
-    absences: {},
   });
   if (file) {
     m.fileInfo = { fileId: file.id, fileName: file.filename };
@@ -559,15 +471,14 @@ function _buildMsg(role, content, searchInfo, file) {
     try {
       const si =
         typeof searchInfo === "string" ? JSON.parse(searchInfo) : searchInfo;
-      if (si.guidance) m.guidance = si.guidance;
       if (si.web) {
         m.webResults = si.web;
       }
       if (si.tools) {
-        const _labels = { analysis_done: "Analysis", parse_done: "Parse", guidance_returned: "指导处理已返回（查看正文状态）" };
+        const _labels = { analysis_done: "Analysis", parse_done: "Parse" };
         m.toolStatus = si.tools
           .filter((t) => t.done !== "search_done")
-          .map((t) => t.done === "guidance_returned" ? _labels[t.done] : "✓ " + (_labels[t.done] || "Tool") + " completed")
+          .map((t) => "✓ " + (_labels[t.done] || "Tool") + " completed")
           .join("\n");
         if (m.searchSplitPos == null) {
           // 用 web search 的位置作为文本分割点
@@ -669,7 +580,6 @@ function _deleteUploadedFile(fileId) {
 
 const ACCEPT_RE = /\.(pdf|png|jpe?g|webp)$/i;
 async function pickFile(file) {
-  if (guidanceBusy.value) return;
   if (!userStore.condition) {
     visibleStore.onVisible();
     return;
@@ -696,7 +606,6 @@ async function pickFile(file) {
         return;
       }
       pendingFile.value.fileId = res.file_id;
-      guidanceFileId.value = res.file_id;
       pendingFile.value.uploading = false;
     })
     .catch(() => {
@@ -741,13 +650,9 @@ function closePreview() {
 }
 
 async function switchConversation(threadId) {
-  if (guidanceBusy.value) { ElMessage.warning("简历分析中，请等待结果后切换会话"); return; }
   if (loading.value) stopStream();
   clearFile();
   currentThreadId.value = threadId;
-  guidanceFileId.value = "";
-  targetRole.value = "";
-  jobDescription.value = "";
   messages.value = [];
   loadingMessages.value = true;
   try {
@@ -763,19 +668,14 @@ async function switchConversation(threadId) {
   sidebarOpen.value = false;
 }
 function newConversation() {
-  if (guidanceBusy.value) { ElMessage.warning("简历分析中，请等待结果后新建会话"); return; }
   if (loading.value) stopStream();
   clearFile();
   currentThreadId.value = "";
-  guidanceFileId.value = "";
-  targetRole.value = "";
-  jobDescription.value = "";
   messages.value = [];
   question.value = "";
   nextTick(() => inputBox.value?.focus());
 }
 async function delConversation(threadId) {
-  if (guidanceBusy.value) { ElMessage.warning("简历分析中，请等待结果后删除会话"); return; }
   try {
     await ElMessageBox.confirm("确定删除该会话？", "删除确认", {
       confirmButtonText: "删除",
@@ -860,9 +760,6 @@ async function send() {
       searchSplitPos: null,
       toolStatus: "",
       toolDone: false,
-      guidance: null,
-      answers: {},
-      absences: {},
     }),
   );
 
@@ -906,13 +803,10 @@ async function send() {
           _setStatus("Analyzing resume...", msg);
         } else if (state.state === "提取简历信息中") {
           _setStatus("提取简历信息中...", msg);
-        } else if (state.state === "提取简历事实中" || state.state === "对齐岗位要求与证据中") {
-          _setStatus(state.state + "...", msg);
-        } else if (state.state === "guidance_result") {
-          msg.guidance = state.result;
-          selectGuidanceFile(state.result);
-        } else if (state.state === "guidance_returned") {
-          _setStatus("指导处理已返回，请查看正文结果状态", msg);
+        } else if (state.state === "简历信息评估中") {
+          _setStatus("简历信息评估中...", msg);
+        } else if (state.state === "评估报告生成中") {
+          _setStatus("评估报告生成中...", msg);
         } else if (state.state === "Parsing") {
           _setStatus("Parsing resume...", msg);
         } else if (state.state === "search_done") {
@@ -974,23 +868,6 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.guidance-form, .guidance-followup {
-  padding: 10px;
-  margin-bottom: 8px;
-  border: 1px solid var(--border-color, #ddd);
-  border-radius: 8px;
-  font-size: 13px;
-}
-.guidance-form input, .guidance-form select, .guidance-form textarea,
-.guidance-followup textarea {
-  display: block;
-  width: 100%;
-  box-sizing: border-box;
-  margin: 8px 0;
-  padding: 7px;
-}
-.guidance-form button, .guidance-followup button { margin: 6px; padding: 6px; }
-.guidance-form small { display: block; }
 .ai-page {
   --primary: #0891b2;
   --primary-hover: #076e86;

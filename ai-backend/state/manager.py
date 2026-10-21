@@ -1,82 +1,37 @@
-"""单实例文件级指导存储：与应用 SQLite 共生命周期，不借用聊天 checkpoint。
 
-原 Redis pending 缓存已迁移；v1 不读取旧评分提取格式。
-"""
-import hashlib
-from contextlib import contextmanager
+import json
+import os
+from typing import Optional
 
-from fastapi import HTTPException
+import redis as _redis
 
-from agent.schema import Extraction, Result
-from conversation.service import get_app_db, get_owned_file, require_thread_access
+_PENDING_EVAL_PREFIX = "resume_eval:pending:"
+_DONE_EVAL_PREFIX = "resume_eval:done:"
 
 
-@contextmanager
-def connection():
-    conn = get_app_db()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+class CacheManager:
+
+    def __init__(self, redis_url: str = ""):
+        redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
+        self._r = _redis.from_url(redis_url, decode_responses=True)
+
+    def set_pending_evaluation(self, file_id: str, extracted: dict, ttl: int = 3600):
+        """简历分析因缺少 position 中断时，缓存已提取的结构化信息，等用户补充岗位后续跑"""
+        self._r.set(f"{_PENDING_EVAL_PREFIX}{file_id}", json.dumps(extracted, ensure_ascii=False), ex=ttl)
+
+    def get_pending_evaluation(self, file_id: str) -> Optional[dict]:
+        raw = self._r.get(f"{_PENDING_EVAL_PREFIX}{file_id}")
+        return json.loads(raw) if raw else None
+
+    def delete_pending_evaluation(self, file_id: str):
+        self._r.delete(f"{_PENDING_EVAL_PREFIX}{file_id}")
+
+# 全局单例
+_manager: Optional[CacheManager] = None
 
 
-class GuidanceStore:
-    def __init__(self):
-        with connection() as conn:
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS guidance_extractions (
-                    file_id TEXT PRIMARY KEY REFERENCES uploaded_files(file_id) ON DELETE CASCADE,
-                    fingerprint TEXT NOT NULL,
-                    extraction TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS guidance_results (
-                    id TEXT PRIMARY KEY,
-                    file_id TEXT NOT NULL REFERENCES uploaded_files(file_id) ON DELETE CASCADE,
-                    result TEXT NOT NULL
-                );
-            """)
-
-    def owned_file(self, user_id, thread_id, file_id):
-        require_thread_access(thread_id, user_id)
-        row = get_owned_file(file_id, user_id)
-        if row["thread_id"] != thread_id:
-            raise HTTPException(404, "文件不存在")
-        return row
-
-    @staticmethod
-    def fingerprint(text):
-        return "guidance.v1:" + hashlib.sha256(text.encode()).hexdigest()
-
-    def extraction(self, file_id, text):
-        with connection() as conn:
-            row = conn.execute("SELECT * FROM guidance_extractions WHERE file_id = ?", (file_id,)).fetchone()
-        if row and row["fingerprint"] == self.fingerprint(text):
-            return Extraction.model_validate_json(row["extraction"])
-        return None
-
-    def save_extraction(self, file_id, text, extraction):
-        with connection() as conn:
-            conn.execute("INSERT OR REPLACE INTO guidance_extractions VALUES (?, ?, ?)",
-                         (file_id, self.fingerprint(text), extraction.model_dump_json()))
-
-    def result(self, result_id, user_id, thread_id, file_id):
-        self.owned_file(user_id, thread_id, file_id)
-        with connection() as conn:
-            row = conn.execute("SELECT result FROM guidance_results WHERE id = ? AND file_id = ?",
-                               (result_id, file_id)).fetchone()
-        if not row:
-            raise HTTPException(404, "分析记录不存在或不属于此文件")
-        return Result.model_validate_json(row["result"])
-
-    def save_result(self, result):
-        # 存储边界复核结构与引用；失败/不完整记录保留其真实状态。
-        from agent.nodes import validate_extraction, validate_guidance
-        checked = Result.model_validate_json(result.model_dump_json())
-        if checked.facts:
-            validate_extraction(Extraction(facts=checked.facts), checked.sources)
-        if checked.guidance:
-            validate_guidance(checked.guidance, checked.sources)
-        with connection() as conn:
-            conn.execute("INSERT INTO guidance_results VALUES (?, ?, ?)",
-                         (checked.id, checked.file_id, checked.model_dump_json()))
+def get_cache_manager() -> CacheManager:
+    global _manager
+    if _manager is None:
+        _manager = CacheManager()
+    return _manager

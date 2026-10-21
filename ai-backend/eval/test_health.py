@@ -22,9 +22,10 @@ def test_readiness_success_uses_local_probes(monkeypatch):
     fake = SimpleNamespace(ping=lambda: True, close=lambda: None)
     monkeypatch.setenv('REDIS_URL', 'redis://unused:6379/0')
     monkeypatch.setenv('APP_VERSION', 'test-sha')
-    # Redis is intentionally absent from the minimal CI lock; stub only the probe.
+    # state.manager imports Redis, intentionally absent from the minimal CI lock.
     import sys
-    with patch.dict(sys.modules, {'redis': SimpleNamespace(from_url=lambda *a, **k: fake)}), \
+    with patch.dict(sys.modules, {'state.manager': SimpleNamespace(
+            _redis=SimpleNamespace(from_url=lambda *a, **k: fake))}), \
             patch('common.health.sqlite3.connect') as connection:
         response = readiness()
     assert response.status_code == 200

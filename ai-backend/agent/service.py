@@ -25,7 +25,7 @@ def load_system_prompt() -> str:
         with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return "你是提供有来源修改建议的智能简历指导助手，不打分、不预测录用结果。"
+        return "你是智能简历评估助手"
 
 
 def _format_search_results(tool_content: str) -> str:
@@ -100,7 +100,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             tools=tools or [],
             checkpointer=checkpointer,
             system_prompt=load_system_prompt(),
-            # 简历原文 / 指导结果等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
+            # 简历原文 / 评分报告等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
             # 超过 token 阈值后自动清理较早的工具结果（只保留最近几条），避免上下文随轮次无限膨胀
             middleware=[
                 ContextEditingMiddleware(
@@ -111,19 +111,23 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         def _emit_state(state: str):
             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=state))
 
-        def _emit_guidance(result):
-            search_info["guidance"] = result
-            loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state="guidance_result", result=result))
+        def _emit_chunk(text: str):
+            # return_direct 工具内部真正流式生成时（如 report_generator 逐 token 输出），
+            # 通过这里把每段增量实时转发给前端，标记 tool_streamed 避免 ToolMessage 分支重复整段推送
+            nonlocal tool_streamed
+            tool_streamed = True
+            ai_reply_chunks.append(text)
+            loop.call_soon_threadsafe(queue.put_nowait, text)
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "user_id": user_id, "file_id": file_id,
-                             "emit_state": _emit_state,
-                             "emit_guidance": _emit_guidance}}
+                             "emit_state": _emit_state, "emit_chunk": _emit_chunk}}
         step = 0
         alog.info(step, "user_asking", "用户提问", question)
         step += 1
 
         current_tool_name = ""
+        tool_streamed = False
         _thinking = []
         _last_meta = {}
         try:
@@ -153,6 +157,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             name = getattr(tc, "name", "") or ""
                         if name and name != current_tool_name:
                             current_tool_name = name
+                            tool_streamed = False
                             alog.info(step, "tool_call", "调用工具", current_tool_name)
                             step += 1
 
@@ -191,7 +196,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         step += 1
                         loop.call_soon_threadsafe(queue.put_nowait, SSE.state(**state_data))
 
-                        if _saved_tool_name in direct_tool_names:
+                        if _saved_tool_name in direct_tool_names and not tool_streamed:
                             content = str(chunk.content)
                             ai_reply_chunks.append(content)
                             loop.call_soon_threadsafe(queue.put_nowait, content)

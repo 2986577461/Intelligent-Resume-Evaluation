@@ -12,7 +12,7 @@ class SSE:
     # done:    工具返回结果时发送的状态
     TOOLS = {
         "tavily":         {"calling": "Searching the web", "done": "search_done"},
-        "analyze_resume": {"calling": "Analyzing",        "done": "guidance_returned"},
+        "analyze_resume": {"calling": "Analyzing",        "done": "analysis_done"},
         "parse_resume":   {"calling": "Parsing",          "done": "parse_done"},
     }
 
