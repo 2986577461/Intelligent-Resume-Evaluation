@@ -13,7 +13,7 @@ health_router = APIRouter()
 def readiness():
     try:
         from conversation.service import APP_DB_PATH
-        from state.manager import _redis
+        import redis as _redis  # 部署仍保留 Redis 探活；核心指导状态已迁到 SQLite。
         with sqlite3.connect(APP_DB_PATH, timeout=2) as conn:
             conn.execute('SELECT 1 FROM users LIMIT 1').fetchone()
         checkpoint = Path(__file__).resolve().parents[1] / 'agent/db/conversations.db'

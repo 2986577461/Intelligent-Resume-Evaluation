@@ -1,112 +1,139 @@
-"""LangGraph 评分工作流 — 并行 Multi-Agent"""
+"""核心指导链路：提取（可复用）→ 岗位确认 → 一次证据分析 → 校验。
 
-from typing import TypedDict
+保留模块路径，不再为评分展示编排并行 Agent；持久化由文件级 store 完成。
+"""
+import hashlib
+import uuid
 
-from langgraph.graph import StateGraph, START
-from langgraph.types import RetryPolicy
+from fastapi import HTTPException
 
-from agent.nodes import (
-    resume_analyst_node,
-    skill_analyst_node,
-    project_analyst_node,
-    experience_analyst_node,
-    education_analyst_node,
-    layout_analyst_node,
-    report_generator_node,
-)
-from common.logger import get_agent_logger
+from agent.nodes import (Budget, ProcessingError, call_structured, failure_detail,
+                         filter_optional_rewrites, validate_extraction)
+from agent.schema import AnalyzeRequest, Extraction, Guidance, Result, Source
 
-alog = get_agent_logger()
-
-
-class EvalState(TypedDict):
-    resume_text: str
-    analysis: dict
-    position: str
-    skills: list
-    education: list
-    experiences: list
-    projects: list
-    page_count: int
-    skill_result: dict
-    project_result: dict
-    experience_result: dict
-    education_result: dict
-    layout_result: dict
-    report: str
+BASE_LIMITATIONS = [
+    "来源引用仅表示文本存在，不表示经历经过独立核实；模型判断可能有误，请核对。",
+    "未提及不等于不会；学历仅在目标要求明确时讨论，不按学校名气评价。",
+    "仅分析提取文本，无法据此判断完整视觉排版；不预测录用结果。",
+]
 
 
-_LLM_RETRY_POLICY = RetryPolicy(max_attempts=2)
+def source_units(text, kind):
+    # 已有 PDF/OCR 文本按非空行切片。ID 由内容和重复序号生成，跨轮稳定。
+    seen = {}
+    result = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        digest = hashlib.sha256(line.encode()).hexdigest()[:16]
+        seen[digest] = seen.get(digest, 0) + 1
+        result.append(Source(id=f"{kind}:{digest}:{seen[digest]}", kind=kind, text=line))
+    return result
 
 
-def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None, emit_chunk=None):
-    """注册四个维度 analyst + report 汇总节点，供 build_eval_graph / build_scoring_graph 共用
+def analyze(request: AnalyzeRequest, user_id, store, model_factory, budget=None, emit=None):
+    # 所有权检查在读取缓存、补充陈述或创建模型之前执行。
+    row = store.owned_file(user_id, request.thread_id, request.file_id)
+    parent = store.result(request.parent_id, user_id, request.thread_id, request.file_id) if request.parent_id else None
+    if request.answers and (not parent or not parent.guidance):
+        raise HTTPException(422, "补充回答必须绑定有追问的分析记录")
+    target_changed = parent and parent.target_role and (
+        request.target_role != parent.target_role
+        or [s.text for s in source_units(request.jd, "jd")] != [s.text for s in parent.sources if s.kind == "jd"]
+    )
+    if target_changed:
+        raise HTTPException(422, "续答需保留原岗位与 JD；更换目标请发起新分析")
+    old_questions = {q.id: q for q in parent.guidance.questions} if parent and parent.guidance else {}
+    if (len({a.question_id for a in request.answers}) != len(request.answers)
+            or any(a.question_id not in old_questions for a in request.answers)):
+        raise HTTPException(422, "回答的问题不属于此分析记录")
+    text = row["extracted_text"] or ""
+    resume_sources = source_units(text, "resume")
+    if parent and ([(s.id, s.text) for s in resume_sources]
+                   != [(s.id, s.text) for s in parent.sources if s.kind == "resume"]):
+        raise HTTPException(409, "简历提取文本已变化，请重新分析，不能继续旧问题")
+    sources = resume_sources + source_units(request.jd.strip(), "jd")
+    if parent:
+        sources.extend(s for s in parent.sources if s.kind == "user")
+    result_id = uuid.uuid4().hex
+    for i, a in enumerate(request.answers):
+        sources.append(Source(id=f"user:{result_id}:{i + 1}", kind="user", text=a.text.strip(),
+                              confirms_absence=a.confirms_absence,
+                              requirement_id=old_questions[a.question_id].requirement_id))
+    result = Result(id=result_id, file_id=request.file_id, target_role=request.target_role.strip(),
+                    jd_used=bool(request.jd.strip()), status="failed", sources=sources, facts=[],
+                    guidance=None, limitations=list(BASE_LIMITATIONS))
+    if not result.jd_used:
+        result.limitations.append("未提供 JD：依据岗位的一般要求分析，不代表具体企业招聘标准。")
+    budget = budget or Budget()
+    model = None
 
-    每个节点单独配置 retry_policy：某个维度因网络抖动/限流等瞬时错误失败时，
-    LangGraph 只会重试这一个节点，不影响并行分支里已经跑完的其他维度。
-    """
-    builder.add_node("skill", lambda s: skill_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("project", lambda s: project_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("experience", lambda s: experience_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("education", lambda s: education_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("layout", lambda s: layout_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state, emit_chunk),
-                     retry_policy=_LLM_RETRY_POLICY)
+    def get_model():
+        nonlocal model
+        budget.remaining()
+        if model is None:
+            try:
+                model = model_factory()
+            except ProcessingError:
+                raise
+            except Exception as exc:
+                raise ProcessingError("model_unavailable", failure_detail(exc, "model_init", 0)) from exc
+        return model
 
-    builder.add_edge("skill", "report")
-    builder.add_edge("project", "report")
-    builder.add_edge("experience", "report")
-    builder.add_edge("education", "report")
-    builder.add_edge("layout", "report")
-    builder.set_finish_point("report")
+    try:
+        if not text.strip():
+            raise ProcessingError("text_unavailable")
+        try:
+            extraction = store.extraction(request.file_id, text)
+            if extraction:
+                validate_extraction(extraction, sources)
+        except ValueError as exc:
+            raise ProcessingError("invalid_cached_extraction") from exc
+        if not extraction:
+            if emit:
+                emit("提取简历事实中")
+            extraction = call_structured(get_model(), "extract.md",
+                                         {"sources": [s.model_dump() for s in sources if s.kind == "resume"]},
+                                         Extraction, lambda x: validate_extraction(x, sources), budget)
+            store.save_extraction(request.file_id, text, extraction)
+        result.facts = extraction.facts
+        if not result.target_role:
+            result.status = "needs_target"
+            result.limitations.append("请由用户确认目标岗位；不根据简历或模型猜测自动确定。")
+        else:
+            if emit:
+                emit("对齐岗位要求与证据中")
 
+            def validate(g):
+                if parent and parent.guidance:
+                    old = {m.id: (m.requirement, m.basis, m.requirement_source_ids) for m in parent.guidance.matches}
+                    new = {m.id: (m.requirement, m.basis, m.requirement_source_ids) for m in g.matches}
+                    if old != new:
+                        raise ValueError("follow-up must keep requirement identities")
+                result.omitted_components = filter_optional_rewrites(g, sources)
 
-def build_eval_graph(model, emit_state=None, emit_chunk=None):
-    """
-    构建并行简历评估工作流。
-
-    流程图：
-                   ┌─ skill ───┐
-                   ├─ project──┤
-    resume_analyst ─┼─ exp ─────┤─ report
-                   ├─ edu ─────┤
-                   └─ layout ──┘
-
-    执行顺序：
-    1. resume_analyst → 提取结构化信息（技能、教育、经验、项目等）
-    2. skill / project / experience / education / layout → 五个维度独立并行评分
-    3. report → 汇总各维度评分，生成最终报告
-    """
-    builder = StateGraph(EvalState)
-
-    builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model, emit_state),
-                     retry_policy=_LLM_RETRY_POLICY)
-    _wire_scoring_nodes(builder, model, emit_state, emit_chunk)
-
-    builder.set_entry_point("resume_analyst")
-    builder.add_edge("resume_analyst", "skill")
-    builder.add_edge("resume_analyst", "project")
-    builder.add_edge("resume_analyst", "experience")
-    builder.add_edge("resume_analyst", "education")
-    builder.add_edge("resume_analyst", "layout")
-
-    return builder.compile()
-
-
-def build_scoring_graph(model, emit_state=None, emit_chunk=None):
-    """
-    跳过 resume_analyst，直接从四个维度 analyst 开始并行打分。
-
-    用于 position 缺失中断后、用户补充岗位续跑评分的场景：此时结构化信息
-    已经从缓存里拿到，不需要再调用一次 LLM 重新提取简历。
-    """
-    builder = StateGraph(EvalState)
-    _wire_scoring_nodes(builder, model, emit_state, emit_chunk)
-
-    builder.add_edge(START, "skill")
-    builder.add_edge(START, "project")
-    builder.add_edge(START, "experience")
-    builder.add_edge(START, "education")
-    builder.add_edge(START, "layout")
-
-    return builder.compile()
+            result.guidance = call_structured(get_model(), "guide.md", {
+                "target_role_confirmed_by_user": result.target_role,
+                "jd_used": result.jd_used,
+                "sources": [s.model_dump() for s in sources],
+                "facts": [f.model_dump() for f in extraction.facts],
+                "previous_guidance": parent.guidance.model_dump() if parent and parent.guidance else None,
+            }, Guidance, validate, budget)
+            result.guidance.actions.sort(key=lambda a: a.priority)
+            incomplete = (result.omitted_components or result.guidance.questions
+                          or any(m.status == "insufficient" for m in result.guidance.matches))
+            result.status = "partial" if incomplete else "success"
+    except ProcessingError as exc:
+        result.error_code = exc.code
+        result.processing_error = exc.detail
+        result.status = "partial" if result.facts else "failed"
+        result.limitations.append("本轮模型处理未完成，不应将处理失败理解为缺少能力或经历。")
+        # 可复用上一轮已校验指导，但明确不是本轮更新成功。
+        if parent and parent.guidance:
+            result.status = "partial"
+            result.guidance = parent.guidance
+            result.omitted_components = parent.omitted_components
+            result.limitations.append("以下核心指导沿用上一轮已校验结果，尚未结合本轮补充更新。")
+    store.save_result(result)
+    return result

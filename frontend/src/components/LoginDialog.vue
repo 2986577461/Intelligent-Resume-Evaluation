@@ -2,7 +2,7 @@
   <div v-if="visibleStore.visible" class="modal-overlay" @click.self="visibleStore.offVisible()">
     <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <button class="modal-close" aria-label="关闭" @click="visibleStore.offVisible()">×</button>
-      <h2 id="account-title" class="dialog-title">智能简历评估</h2>
+      <h2 id="account-title" class="dialog-title">智能简历指导</h2>
       <p class="dialog-subtitle">{{ isRegister ? "使用邮箱创建账号" : "邮箱登录" }}</p>
       <form class="dialog-form" @submit.prevent="handleSubmit">
         <div class="form-field">

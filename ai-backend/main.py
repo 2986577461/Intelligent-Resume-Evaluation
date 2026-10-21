@@ -63,7 +63,7 @@ web_search = TavilySearch(
 
 app = FastAPI(
     lifespan=lifespan,
-    title="智能简历评估",
+    title="智能简历指导",
     description="支持联网搜索、SQLite 记忆、流式输出的智能对话接口",
     version="1.0.0",
 )

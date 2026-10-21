@@ -1,17 +1,20 @@
-# 智能简历评估
+# 智能简历指导
 
 [![CI](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml)
 
-基于 Vue 3、FastAPI 和 LangGraph 的对话式简历评估项目。上传 PDF 或图片简历后，系统提取简历信息，从技能匹配、项目深度、工作经历、教育背景和排版五个维度并行分析，再以流式 Markdown 输出评估报告和针对性的面试问题。
+基于 Vue 3、FastAPI 和 LangGraph 聊天入口的简历指导项目。围绕用户确认的目标岗位，依据简历原文和可选 JD，识别匹配证据、表达问题与信息缺口，返回有依据的行动建议、少量追问和保守局部改写。不提供整体质量分、学校名气评价或录用概率。
+
+最小闭环：上传简历 → 在「简历指导」选择文件并确认目标岗位 → 分析事实与要求 → 必要时按文件补充 → 查看来源、行动建议与原文/建议版本。没有 JD 也能使用，会明确说明依据是岗位一般要求。
 
 账号使用本地邮箱＋密码注册、登录，不依赖外部用户服务。模型、视觉识别和联网搜索仍需要相应的 API 服务，调用费用由部署者承担。
 
 ## 功能
 
 - **简历识别**：PDF 文本提取；扫描版 PDF 和图片通过 DeepSeek 视觉模型 OCR。
-- **多维度评估**：LangGraph 编排五个分析节点，汇总优势、风险、改进建议和面试追问。
-- **补充岗位后续评**：缺少目标岗位时先询问用户，使用 Redis 暂存提取结果，避免重复提取。
-- **流式对话**：通过 SSE 展示处理状态和报告增量，支持联网搜索和后续追问。
+- **证据指导**：原文片段有稳定 ID；提取事实和要求对齐结果通过生产 Schema、来源引用及状态校验。
+- **有限补充**：缺少岗位时要求用户确认；已提取事实按文件/文本指纹存入 SQLite，续答不重新提取。用户陈述与原简历来源分开。
+- **有界改写**：展示原文、整句摘编版本、理由和待确认内容，不生成未经确认的技术、职责或数字，不覆盖原文件。
+- **普通聊天**：保留 SSE 聊天和搜索。指导使用显式 POST，先校验再确定性生成 Markdown，不直接流出模型报告 token。
 - **会话管理**：保存历史消息和附件，按登录账号隔离访问。
 - **本地账号**：邮箱注册、登录、恢复登录状态和退出登录。
 
@@ -24,7 +27,7 @@
 | 前端 | Vue 3、Vite、Pinia、Element Plus、Axios |
 | API | Python 3.12、FastAPI、Uvicorn |
 | AI 工作流 | LangChain、LangGraph、DeepSeek、Tavily |
-| 数据 | SQLite（账号、登录会话、聊天记录、附件、Agent 检查点）、Redis（待续评缓存） |
+| 数据 | SQLite（账号、登录会话、聊天记录、附件、文件级事实与指导结果、聊天检查点）；Redis 保留现有部署探活 |
 | 测试与 CI | pytest、假模型离线测试、FastAPI TestClient、GitHub Actions |
 
 ```text
@@ -36,12 +39,12 @@
 │   └── vite.config.js        # 开发代理
 ├── ai-backend/
 │   ├── auth/                 # 本地账号、密码散列、服务端登录会话
-│   ├── agent/                # 评分图、提示词、Agent 工具和 SSE
+│   ├── agent/                # 指导链路、生产 Schema、提示词、聊天工具和 SSE
 │   ├── conversation/         # 会话、消息、附件持久化
 │   ├── files/                # 文件上传、提取、预览与清理
 │   ├── common/               # 视觉模型客户端、日志、同源请求保护
-│   ├── state/                # Redis 缓存
-│   ├── eval/                 # 离线测试、账号/API 测试、真实模型评测
+│   ├── state/                # 文件级提取及指导结果 SQLite 存储
+│   ├── eval/                 # 离线数据流/账号/API 测试、合成案例及人工核查标准
 │   ├── main.py               # FastAPI 入口
 │   ├── .env.example          # 环境配置示例
 │   ├── requirements.txt      # 完整应用依赖
@@ -69,13 +72,16 @@ cp ai-backend/.env.example ai-backend/.env
 
 | 配置项 | 用途 |
 | --- | --- |
-| `DEEPSEEK_API_KEY` | 对话、评分和视觉识别所需的 DeepSeek 密钥 |
-| `DEEPSEEK_BASE_URL` | 当前视觉识别客户端使用的 API 地址，默认 `https://api.deepseek.com` |
+| `DEEPSEEK_API_KEY` | 对话、简历指导和视觉识别所需的 DeepSeek 密钥 |
+| `DEEPSEEK_BASE_URL` | 视觉识别及简历指导使用的 API 地址；指导优先读取此项，其次兼容 `DEEPSEEK_API_BASE`，未设置时使用官方地址 |
 | `DEEPSEEK_VISION_MODEL` | OCR 模型，默认 `deepseek-v4-flash-vision-exp`；需确认账号有对应模型权限 |
 | `TAVILY_API_KEY` | 联网搜索密钥；当前应用启动时会初始化搜索工具 |
-| `REDIS_URL` | 默认 `redis://localhost:6379/0`，简历评估流程需要连接 Redis |
+| `REDIS_URL` | 现有部署与 `/api/health` 仍需要 Redis；新指导状态不依赖 Redis |
 | `SESSION_COOKIE_SECURE` | 本地 HTTP 使用 `false`；生产 HTTPS 必须设为 `true` |
-| `MODEL_NAME`（可选） | 评分工具和真实模型评测的模型名，默认 `deepseek-v4-flash`；主对话模型目前仍在 `main.py` 中指定 |
+| `MODEL_NAME`（可选） | 指导模型名，默认 `deepseek-v4-flash`；普通聊天模型仍在 `main.py` 中指定 |
+| `GUIDANCE_REQUEST_TIMEOUT_SECONDS` | 指导单次模型请求超时，默认 25 秒；SDK 重试关闭 |
+| `GUIDANCE_BUDGET_SECONDS` | 指导一轮模型处理总预算，默认 90 秒；每次请求取剩余预算与单次超时较小值 |
+| `GUIDANCE_MAX_ATTEMPTS` | 每阶段最大尝试次数（含首次），默认 2，上限 3；仅重试瞬时错误、限流或非法结构输出 |
 | `APP_DATA_DIR`（可选） | 账号、登录会话、消息和附件数据库目录，默认 `ai-backend/conversation/db/`；不改变 Agent 检查点目录 |
 
 模型名称是否可用取决于服务商和账号权限，配置密钥不代表一定有访问权限。
@@ -147,7 +153,7 @@ SQLite 使用 WAL，备份应使用 SQLite 备份工具，或停服后连同相�
 
 ## 测试与 CI
 
-离线测试不需要模型密钥或 Redis，包括评分图/JSON 解析，以及注册、登录、会话过期、退出、文件上传和跨账号访问隔离。建议在独立 Python 3.12 环境中执行：
+离线测试不需要模型密钥或 Redis，包括指导数据流、JSON/字段/引用校验、补充绑定、超时重试、展示回退，以及注册、登录、会话过期、退出、文件上传和跨账号访问隔离。建议在独立 Python 3.12 环境中执行：
 
 ```bash
 python3.12 -m venv "$HOME/.venvs/resume-evaluation-ci"
@@ -161,15 +167,15 @@ LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false \
 
 只允许测试客户端内部使用 Unix socket，禁止 TCP/IP 联网。测试使用临时 SQLite 数据库，不修改正式账号或会话数据。
 
-真实模型评测需要安装完整应用依赖并配置密钥，**会产生 API 费用**，不在基础 CI 中执行：
+生产 Schema 位于 `agent/schema.py`，评测直接复用该协议；Markdown 只由校验后的结果生成。旧分数区间/权重/实体命中评测已移除，不再维护另一份 JSON 报告协议。
+
+可选真实模型评测必须安装完整依赖、在终端配置密钥，并显式同意费用；默认不运行、不读取 `.env`：
 
 ```bash
-# 在 ai-backend 目录、完整应用环境中执行
-python -m pytest -m llm -v
-python -m pytest -m consistency -v
+RUN_PAID_GUIDANCE_EVAL=1 python -m pytest -m llm -v --basetemp=/tmp/resume-guidance-eval
 ```
 
-注意：现有真实模型评测仍按 JSON 报告做结构校验，而当前报告提示词要求 Markdown；运行这部分评测前需要先对齐报告契约，不能把它视为已通过的质量保证。
+这只检验协议和来源约束，不能证明语义质量。合成案例、人工核查标准、状态/超时边界及迁移说明见 [指导链路文档](docs/resume-guidance.md)。
 
 GitHub Actions 在 push、PR 更新时执行前端构建、后端离线测试和部署脚本离线测试，不自动部署。完整说明见 [docs/ci.md](docs/ci.md)。
 
