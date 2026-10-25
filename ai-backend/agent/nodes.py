@@ -1,141 +1,158 @@
-"""Multi-Agent 评分节点 — 从 prompts/ 目录加载提示词"""
+"""Multi-Agent 评分节点：事实提取、证据依赖、规则算分与确定性展示。"""
 
 import json
 import os
+from datetime import date
 
 from langchain_core.messages import HumanMessage, SystemMessage
+
+from agent.schema import (
+    AnalystResult, DIMENSION_LABELS, DIMENSION_WEIGHTS, Extraction, Report, Synthesis, validate_dimension,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _load_prompt(name: str) -> str:
-    path = os.path.join(SCRIPT_DIR, "prompts", name)
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read().strip()
+    with open(os.path.join(SCRIPT_DIR, "prompts", name), encoding="utf-8") as file:
+        return file.read().strip()
 
 
-def _call_llm(prompt: str, text: str, model) -> dict:
-    """调用 LLM 并解析 JSON 返回。
-
-    这个调用发生在外层对话 agent 的工具执行过程中。LangChain 的回调管理器默认按
-    上下文（contextvars）传播，如果不显式清空 callbacks，这次内部调用的输出会被
-    外层 `agent.stream(..., stream_mode="messages")` 当成对话回复的一部分转发给用户，
-    造成"内部提取结果泄漏成聊天内容"的问题。传空 callbacks + 独立 run_name/tags 隔离掉。
-    """
+def _call_llm(prompt: str, text: str, model, trace=None, stage="internal") -> dict:
+    """内部 JSON 调用不向聊天泄漏 token；非法输出抛错，由所在节点有限重试。"""
     response = model.invoke(
         [SystemMessage(content=prompt), HumanMessage(content=text)],
-        config={"callbacks": [], "run_name": "multi_agent_internal_call", "tags": ["multi_agent_internal"]},
+        config={"callbacks": [], "run_name": f"resume_{stage}", "tags": ["multi_agent_internal"]},
     )
-    content = response.content.strip()
-    if "```json" in content:
-        content = content.split("```json")[1].split("```")[0].strip()
-    elif "```" in content:
-        content = content.split("```")[1].split("```")[0].strip()
-
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        return {"raw": content}
-
-
-def _call_llm_text(prompt: str, text: str, model) -> str:
-    """调用 LLM 并返回纯文本（不做 JSON 解析），用于 markdown 报告类输出。"""
-    response = model.invoke(
-        [SystemMessage(content=prompt), HumanMessage(content=text)],
-        config={"callbacks": [], "run_name": "multi_agent_internal_call", "tags": ["multi_agent_internal"]},
-    )
+    if trace:
+        trace.usage(stage, response)
     content = response.content.strip()
     if content.startswith("```") and content.endswith("```"):
         content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return content
+    result = json.loads(content)
+    if not isinstance(result, dict):
+        raise ValueError("模型必须返回 JSON 对象")
+    return result
 
 
-def _call_llm_stream(prompt: str, text: str, model, on_chunk=None) -> str:
-    """流式调用 LLM，每收到一段增量文本就通过 on_chunk 实时转发，返回拼接后的完整文本。"""
-    pieces = []
-    for chunk in model.stream(
-            [SystemMessage(content=prompt), HumanMessage(content=text)],
-            config={"callbacks": [], "run_name": "multi_agent_internal_call", "tags": ["multi_agent_internal"]},
-    ):
-        delta = chunk.content
-        if not delta:
-            continue
-        pieces.append(delta)
-        if on_chunk:
-            on_chunk(delta)
-
-    content = "".join(pieces).strip()
-    if content.startswith("```") and content.endswith("```"):
-        content = content.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-    return content
-
-
-def resume_analyst_node(state: dict, model, emit_state=None) -> dict:
-    """LLM 提取简历结构化信息"""
-    resume_text = state.get("resume_text", "")
-    if not resume_text:
-        return {"error": "缺少简历文本"}
+def resume_analyst_node(state: dict, model, emit_state=None, trace=None) -> dict:
+    if not state.get("resume_text", "").strip():
+        raise ValueError("缺少简历文本")
     if emit_state:
         emit_state("提取简历信息中")
-    prompt = _load_prompt("resume_analyst.md")
-    output = _call_llm(prompt, f"简历文本：\n{resume_text}", model)
-    return output
+    output = _call_llm(_load_prompt("resume_analyst.md"),
+                       f"简历文本：\n{state['resume_text']}", model, trace, "extraction")
+    return Extraction.model_validate(output).model_dump()
 
 
 def _analyst_input(state: dict, key: str) -> str:
-    """构建 analyst 的输入：{数据, position}"""
-    return json.dumps({
-        key: state.get(key, []),
-        "position": state.get("position"),
-    }, ensure_ascii=False, indent=2)
+    data = {key: state.get(key) or [], "position": state.get("position")}
+    if key == "skills":
+        # 技能判断必须等待项目分析，并同时拿到项目/经历原始事实，不能只信下游结论。
+        data.update(projects=state.get("projects") or [],
+                    experiences=state.get("experiences") or [],
+                    project_result=state["project_result"],
+                    resume_text=state.get("resume_text", ""))
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
-def skill_analyst_node(state: dict, model) -> dict:
-    """技能匹配度评估"""
-    prompt = _load_prompt("skill_analyst.md")
-    return {"skill_result": _call_llm(prompt, _analyst_input(state, "skills"), model)}
+def _analyst(state, model, key, dimension, trace=None):
+    prompt = (_load_prompt(f"{key}_analyst.md")
+              + "\n只输出1–3条精炼理由，每条约80–120字，保留关键证据、判断与重要信息不足，不逐条复述整个输入。"
+              + "\n输出 JSON Schema：\n" + json.dumps(AnalystResult.model_json_schema(), ensure_ascii=False))
+    result = AnalystResult.model_validate(_call_llm(
+        prompt, _analyst_input(state, {"skill": "skills", "project": "projects",
+                                      "experience": "experiences", "education": "education"}[key]),
+        model, trace, key))
+    # 模型只判断原始分，权重换算交给代码，消除原始分/加权分混淆。
+    weighted = {"score": round(result.raw_score * DIMENSION_WEIGHTS[dimension] / 100, 2),
+                "detail": result.detail}
+    return {f"{key}_result": validate_dimension(weighted, dimension)}
 
 
-def project_analyst_node(state: dict, model) -> dict:
-    """项目深度评估"""
-    prompt = _load_prompt("project_analyst.md")
-    return {"project_result": _call_llm(prompt, _analyst_input(state, "projects"), model)}
+def skill_analyst_node(state, model, trace=None):
+    return _analyst(state, model, "skill", "skill_match", trace)
 
 
-def experience_analyst_node(state: dict, model) -> dict:
-    """经验背景评估"""
-    prompt = _load_prompt("experience_analyst.md")
-    return {"experience_result": _call_llm(prompt, _analyst_input(state, "experiences"), model)}
+def project_analyst_node(state, model, trace=None):
+    return _analyst(state, model, "project", "project_depth", trace)
 
 
-def education_analyst_node(state: dict, model) -> dict:
-    """学历背景评估"""
-    prompt = _load_prompt("education_analyst.md")
-    return {"education_result": _call_llm(prompt, _analyst_input(state, "education"), model)}
+def experience_analyst_node(state, model, trace=None):
+    return _analyst(state, model, "experience", "experience", trace)
 
 
-def layout_analyst_node(state: dict, model) -> dict:
-    """版式篇幅评估"""
-    prompt = _load_prompt("layout_analyst.md")
-    input_text = json.dumps({"page_count": state.get("page_count", 1)}, ensure_ascii=False, indent=2)
-    return {"layout_result": _call_llm(prompt, input_text, model)}
+def education_analyst_node(state, model, trace=None):
+    return _analyst(state, model, "education", "education", trace)
 
 
-def report_generator_node(state: dict, model, emit_state=None, emit_chunk=None) -> dict:
-    """汇总各维度评分生成最终报告"""
-    if emit_state:
-        emit_state("评估报告生成中")
-    results = {
-        "skill_match": state.get("skill_result", {}),
-        "project_depth": state.get("project_result", {}),
-        "experience": state.get("experience_result", {}),
-        "education": state.get("education_result", {}),
-        "layout": state.get("layout_result", {}),
-    }
-    text = json.dumps(results, ensure_ascii=False, indent=2)
-    prompt = _load_prompt("report_generator.md")
+def layout_analyst_node(state, model=None):
+    """复现既有页数规则，不再请求模型；并非 PDF 视觉布局分析。"""
+    pages = state.get("page_count", 1)
+    if not isinstance(pages, int) or isinstance(pages, bool) or pages < 1:
+        raise ValueError("无效页数")
+    result = {"score": 5 if pages == 1 else 0,
+              "detail": ["简历为1页，篇幅合理" if pages == 1 else
+                         f"简历共{pages}页，页数超过1页，建议缩减到1页"]}
+    return {"layout_result": result}
+
+
+def _dimensions(state):
+    return {name: validate_dimension(state[f"{key}_result"], name) for name, key in (
+        ("skill_match", "skill"), ("project_depth", "project"), ("experience", "experience"),
+        ("education", "education"), ("layout", "layout"),
+    )}
+
+
+def _escape(text):
+    # 模型内容只作为普通段落/表格文本展示，不允许注入 HTML 或破坏表格。
+    import html
+    return html.escape(str(text), quote=False).replace("|", "\\|").replace("\n", " ")
+
+
+def scorecard_node(state):
+    """校验维度并准备评分表，仅写入内部状态，不提前输出半份分析。"""
+    dimensions = _dimensions(state)
+    total = round(sum(value["score"] for value in dimensions.values()), 2)
+    lines = [f"**目标岗位：{_escape(state['position'])}**",
+             f"**总分：{total:g} / 100**", "", "| 维度 | 得分 | 评价 |", "| --- | ---: | --- |"]
+    for name, value in dimensions.items():
+        lines.append(f"| {DIMENSION_LABELS[name]} | {value['score']:g} / {DIMENSION_WEIGHTS[name]} | "
+                     + "；".join(_escape(item) for item in value["detail"]) + " |")
+    lines.extend(["", ""])
+    return {"scorecard": "\n".join(lines)}
+
+
+def synthesis_node(state, model, trace=None):
+    """保留完整跨维度综合分析，只不让模型重复算分、重写评分表。"""
+    text = json.dumps({
+        "evaluation_date": date.today().isoformat(),
+        "resume_text": state.get("resume_text", ""),
+        "position": state["position"], "dimensions": _dimensions(state),
+        "facts": {key: state.get(key) or [] for key in ("skills", "projects", "experiences", "education")},
+    }, ensure_ascii=False, separators=(",", ":"))
+    prompt = _load_prompt("report_generator.md") + "\n输出 JSON Schema：\n" + json.dumps(
+        Synthesis.model_json_schema(), ensure_ascii=False)
+    result = Synthesis.model_validate(_call_llm(prompt, text, model, trace, "synthesis"))
+    # 页数风险是确定规则，不能依赖模型是否记得重述。
+    if state["layout_result"]["score"] < DIMENSION_WEIGHTS["layout"]:
+        layout_risk = state["layout_result"]["detail"][0]
+        if not any("页" in risk for risk in result.risks):
+            result.risks = result.risks[:4] + [layout_risk]
+    return {"synthesis": result.model_dump()}
+
+
+def report_generator_node(state, model=None, emit_state=None, emit_chunk=None):
+    dimensions = _dimensions(state)
+    report = Report(overall_score=round(sum(item["score"] for item in dimensions.values()), 2),
+                    dimensions=dimensions, **state["synthesis"])
+    lines = []
+    for title, items in (("优势", report.strengths), ("风险与改进建议", report.risks),
+                         ("针对性面试追问", report.interview_questions)):
+        lines.extend([f"## {title}", ""] + [f"- {_escape(item)}" for item in items] + [""])
+    lines.extend(["## 总结", "", _escape(report.summary), "",
+                  "> 以上是基于简历文本和现有评分规则的评估，不代表实际能力或录用概率。", ""])
+    content = state["scorecard"] + "\n".join(lines)
     if emit_chunk:
-        report = _call_llm_stream(prompt, text, model, emit_chunk)
-    else:
-        report = _call_llm_text(prompt, text, model)
-    return {"report": report}
+        emit_chunk(content)
+    return {"report": content, "report_data": report.model_dump()}

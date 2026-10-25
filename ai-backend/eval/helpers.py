@@ -17,15 +17,11 @@ def load_golden_resumes() -> list[tuple[str, GoldenResume]]:
 
 
 def run_eval_pipeline(graph, resume_text: str) -> ReportSchema:
-    """跑一次完整评分图（resume_analyst -> 四维度 analyst -> report_generator），返回解析后的 report"""
-    report_text = None
-    for step in graph.stream({"resume_text": resume_text}):
-        node = step.get("report")
-        if node:
-            report_text = node.get("report") if isinstance(node, dict) else node
-    if not report_text:
-        raise AssertionError("评分流程未产出 report 字段")
-    return ReportSchema.model_validate_json(report_text)
+    """生产输出 Markdown，同时提供确定性构造的 report_data 供结构/质量评测。"""
+    result = graph.invoke({"resume_text": resume_text, "page_count": 1})
+    if not result.get("report_data"):
+        raise AssertionError("评分流程未产出 report_data")
+    return ReportSchema.model_validate(result["report_data"])
 
 
 def flatten_report_text(report: ReportSchema) -> str:

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain.agents import create_agent
@@ -92,6 +93,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
 
     def run_agent():
         nonlocal ai_reply_chunks
+        route_started = time.perf_counter()
         checkpointer_ctx = SqliteSaver.from_conn_string(DB_PATH)
         checkpointer = checkpointer_ctx.__enter__()
 
@@ -157,6 +159,10 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             name = getattr(tc, "name", "") or ""
                         if name and name != current_tool_name:
                             current_tool_name = name
+                            if name == "analyze_resume":
+                                alog.info(0, "resume_route_timing", "评分工具路由耗时", {
+                                    "elapsed_seconds": round(time.perf_counter() - route_started, 4),
+                                })
                             tool_streamed = False
                             alog.info(step, "tool_call", "调用工具", current_tool_name)
                             step += 1
@@ -212,7 +218,13 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                 _full = "".join(ai_reply_chunks)
                 if _full:
                     save_ai_message(thread_id, _full, search_info, user_id)
-                    generate_and_save_title(thread_id, question, _full, model)
+                    title_started = time.perf_counter()
+                    try:
+                        generate_and_save_title(thread_id, question, _full, model)
+                    finally:
+                        alog.info(0, "title_timing", "标题阶段耗时（不计入评分）", {
+                            "elapsed_seconds": round(time.perf_counter() - title_started, 4),
+                        })
                     print(f'  [Token] prompt={_last_meta.get("input_tokens", "?")} '
                           f' completion={_last_meta.get("output_tokens", "?")} '
                           f' total={_last_meta.get("total_tokens", "?")} '

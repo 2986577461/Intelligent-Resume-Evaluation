@@ -1,7 +1,5 @@
 """pytest fixtures：真实 model / 评分图 / golden set 参数化"""
 
-import os
-
 import pytest
 
 from agent.graph import build_eval_graph
@@ -12,10 +10,10 @@ from eval.helpers import load_golden_resumes, run_eval_pipeline
 def real_model():
     # 离线测试收集阶段不加载 .env，也不依赖真实模型的 SDK。
     from dotenv import load_dotenv
-    from langchain.chat_models import init_chat_model
+    from agent.scoring import create_scoring_model
 
     load_dotenv()
-    return init_chat_model(model=os.getenv("MODEL_NAME", "deepseek-v4-flash"))
+    return create_scoring_model()
 
 
 @pytest.fixture(scope="session")

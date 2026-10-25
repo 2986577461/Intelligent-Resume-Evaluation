@@ -1,4 +1,4 @@
-"""LangGraph 评分工作流 — 并行 Multi-Agent"""
+"""LangGraph 混合评分：项目 → 技能的真实依赖，其余维度并行。"""
 
 from typing import TypedDict
 
@@ -6,22 +6,13 @@ from langgraph.graph import StateGraph, START
 from langgraph.types import RetryPolicy
 
 from agent.nodes import (
-    resume_analyst_node,
-    skill_analyst_node,
-    project_analyst_node,
-    experience_analyst_node,
-    education_analyst_node,
-    layout_analyst_node,
-    report_generator_node,
+    resume_analyst_node, skill_analyst_node, project_analyst_node, experience_analyst_node,
+    education_analyst_node, layout_analyst_node, scorecard_node, synthesis_node, report_generator_node,
 )
-from common.logger import get_agent_logger
-
-alog = get_agent_logger()
 
 
 class EvalState(TypedDict):
     resume_text: str
-    analysis: dict
     position: str
     skills: list
     education: list
@@ -33,80 +24,88 @@ class EvalState(TypedDict):
     experience_result: dict
     education_result: dict
     layout_result: dict
+    scorecard: str
+    synthesis: dict
     report: str
+    report_data: dict
 
 
-_LLM_RETRY_POLICY = RetryPolicy(max_attempts=2)
+def _retryable(error):
+    # 格式错误重试；鉴权/权限/参数错误不重复付费。SDK 自己不重试。
+    if isinstance(error, (ValueError, TimeoutError, ConnectionError)):
+        return True
+    status = getattr(error, "status_code", None)
+    return status in (408, 409, 429) or (isinstance(status, int) and status >= 500) or type(error).__name__ in {
+        "APIConnectionError", "APITimeoutError", "ConnectError", "ReadTimeout",
+    }
 
 
-def _wire_scoring_nodes(builder: StateGraph, model, emit_state=None, emit_chunk=None):
-    """注册四个维度 analyst + report 汇总节点，供 build_eval_graph / build_scoring_graph 共用
-
-    每个节点单独配置 retry_policy：某个维度因网络抖动/限流等瞬时错误失败时，
-    LangGraph 只会重试这一个节点，不影响并行分支里已经跑完的其他维度。
-    """
-    builder.add_node("skill", lambda s: skill_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("project", lambda s: project_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("experience", lambda s: experience_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("education", lambda s: education_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("layout", lambda s: layout_analyst_node(s, model), retry_policy=_LLM_RETRY_POLICY)
-    builder.add_node("report", lambda s: report_generator_node(s, model, emit_state, emit_chunk),
-                     retry_policy=_LLM_RETRY_POLICY)
-
-    builder.add_edge("skill", "report")
-    builder.add_edge("project", "report")
-    builder.add_edge("experience", "report")
-    builder.add_edge("education", "report")
-    builder.add_edge("layout", "report")
-    builder.set_finish_point("report")
+_LLM_RETRY_POLICY = RetryPolicy(max_attempts=2, retry_on=_retryable)
 
 
-def build_eval_graph(model, emit_state=None, emit_chunk=None):
-    """
-    构建并行简历评估工作流。
-
-    流程图：
-                   ┌─ skill ───┐
-                   ├─ project──┤
-    resume_analyst ─┼─ exp ─────┤─ report
-                   ├─ edu ─────┤
-                   └─ layout ──┘
-
-    执行顺序：
-    1. resume_analyst → 提取结构化信息（技能、教育、经验、项目等）
-    2. skill / project / experience / education / layout → 五个维度独立并行评分
-    3. report → 汇总各维度评分，生成最终报告
-    """
+def _build(model, emit_state, emit_chunk, trace, include_extraction):
     builder = StateGraph(EvalState)
 
-    builder.add_node("resume_analyst", lambda s: resume_analyst_node(s, model, emit_state),
-                     retry_policy=_LLM_RETRY_POLICY)
-    _wire_scoring_nodes(builder, model, emit_state, emit_chunk)
+    def wrap(name, fn, completed=None):
+        def run(state):
+            result = trace.run(name, lambda: fn(state)) if trace else fn(state)
+            if completed and emit_state:
+                emit_state(completed)
+            return result
+        return run
 
-    builder.set_entry_point("resume_analyst")
-    builder.add_edge("resume_analyst", "skill")
-    builder.add_edge("resume_analyst", "project")
-    builder.add_edge("resume_analyst", "experience")
-    builder.add_edge("resume_analyst", "education")
-    builder.add_edge("resume_analyst", "layout")
+    for name, fn, message in (
+        ("project", lambda s: project_analyst_node(s, model, trace), "项目分析完成，开始核验技能佐证"),
+        ("skill", lambda s: skill_analyst_node(s, model, trace), "技能分析完成"),
+        ("experience", lambda s: experience_analyst_node(s, model, trace), "经历分析完成"),
+        ("education", lambda s: education_analyst_node(s, model, trace), "学历分析完成"),
+    ):
+        builder.add_node(name, wrap(name, fn, message), retry_policy=_LLM_RETRY_POLICY)
+    builder.add_node("layout", wrap("layout", layout_analyst_node, "版式规则计算完成"))
+    builder.add_node("scorecard", wrap("scorecard", scorecard_node))
 
+    def synthesize(state):
+        if emit_state:
+            emit_state("评分已完成，综合分析生成中")
+        return synthesis_node(state, model, trace)
+
+    builder.add_node("synthesis", wrap("synthesis", synthesize), retry_policy=_LLM_RETRY_POLICY)
+    builder.add_node("report", wrap("report", lambda s: report_generator_node(s, emit_chunk=emit_chunk)))
+
+    entry = START
+    if include_extraction:
+        builder.add_node("resume_analyst", wrap("extraction", lambda s: resume_analyst_node(s, model, emit_state, trace)),
+                         retry_policy=_LLM_RETRY_POLICY)
+        builder.add_edge(START, "resume_analyst")
+        entry = "resume_analyst"
+    for branch in ("project", "experience", "education", "layout"):
+        builder.add_edge(entry, branch)
+    builder.add_edge("project", "skill")
+    # 显式多源 barrier：所有维度完成后内部算分，再综合分析，最后一次性输出完整内容。
+    builder.add_edge(["skill", "experience", "education", "layout"], "scorecard")
+    builder.add_edge("scorecard", "synthesis")
+    builder.add_edge("synthesis", "report")
+    builder.set_finish_point("report")
     return builder.compile()
 
 
-def build_scoring_graph(model, emit_state=None, emit_chunk=None):
-    """
-    跳过 resume_analyst，直接从四个维度 analyst 开始并行打分。
+def build_eval_graph(model, emit_state=None, emit_chunk=None, trace=None):
+    return _build(model, emit_state, emit_chunk, trace, include_extraction=True)
 
-    用于 position 缺失中断后、用户补充岗位续跑评分的场景：此时结构化信息
-    已经从缓存里拿到，不需要再调用一次 LLM 重新提取简历。
-    """
+
+def build_scoring_graph(model, emit_state=None, emit_chunk=None, trace=None):
+    return _build(model, emit_state, emit_chunk, trace, include_extraction=False)
+
+
+def build_extraction_graph(model, emit_state=None, trace=None):
+    """工具路径也使用节点级重试，成功结果才进入缓存。"""
     builder = StateGraph(EvalState)
-    _wire_scoring_nodes(builder, model, emit_state, emit_chunk)
 
-    builder.add_edge(START, "skill")
-    builder.add_edge(START, "project")
-    builder.add_edge(START, "experience")
-    builder.add_edge(START, "education")
-    builder.add_edge(START, "layout")
+    def extract(state):
+        fn = lambda: resume_analyst_node(state, model, emit_state, trace)
+        return trace.run("extraction", fn) if trace else fn()
 
+    builder.add_node("extraction", extract, retry_policy=_LLM_RETRY_POLICY)
+    builder.add_edge(START, "extraction")
+    builder.set_finish_point("extraction")
     return builder.compile()
