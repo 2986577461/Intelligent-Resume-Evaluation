@@ -1,30 +1,29 @@
-"""评分工具入口：可复用提取缓存，节点性能与首个有效正文计时。"""
+"""简历指导入口。保留模块名兼容现有工具，不再生成评分。"""
 
 import hashlib
 import json
 import os
 
-from agent.graph import build_extraction_graph, build_scoring_graph
+from agent.graph import build_context_graph, build_extraction_graph, build_scoring_graph
 from agent.nodes import _load_prompt
-from agent.schema import Extraction
+from agent.report_stream import ReportStreamInterrupted
+from agent.schema import Extraction, GuidanceContext
 from agent.telemetry import EvaluationTrace
 from state.manager import CacheManager
 
-
-_CACHE_PROTOCOL = "extraction.v1"
+_CACHE_PROTOCOL = "extraction.guidance.v2"
 
 
 def create_scoring_model():
     from langchain.chat_models import init_chat_model
 
     name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
-    options = dict(max_tokens=4096, timeout=float(os.getenv("SCORING_REQUEST_TIMEOUT_SECONDS", "60")),
+    options = dict(max_tokens=8192, timeout=float(os.getenv("SCORING_REQUEST_TIMEOUT_SECONDS", "60")),
                    max_retries=0)
     if name.startswith("deepseek"):
         base = os.getenv("DEEPSEEK_BASE_URL") or os.getenv("DEEPSEEK_API_BASE")
         if base:
             options["api_base"] = base
-        # 结构化评分不依赖隐藏思考，避免每个节点都产生额外 reasoning token。
         options["extra_body"] = {"thinking": {"type": "disabled"}}
     return init_chat_model(model=name, **options).bind(response_format={"type": "json_object"})
 
@@ -37,10 +36,21 @@ def _extraction_version():
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def evaluate_resume(data, user_id, thread_id, model, cache=None, position=None,
-                    emit_state=None, emit_chunk=None, trace=None):
+def clarification(context):
+    missing = context.missing_fields()
+    if missing == ["position", "application_type"]:
+        question = "你这次想投递什么岗位？是实习、校招还是社招？"
+    elif missing == ["position"]:
+        question = "你这次想投递什么岗位？"
+    else:
+        question = "你这次是投实习、校招还是社招？"
+    return "简历已解析，已暂存解析结果和已确认的投递信息。" + question
+
+
+def evaluate_resume(data, user_id, thread_id, model, cache=None, *, user_message="",
+                    store=None, emit_state=None, emit_chunk=None, trace=None):
     trace = trace or EvaluationTrace()
-    # 工具只在全部分析校验成功后发送正文，失败时不展示未完成的评分表。
+
     def output(text):
         if text:
             trace.content()
@@ -48,22 +58,27 @@ def evaluate_resume(data, user_id, thread_id, model, cache=None, position=None,
                 emit_chunk(text)
 
     try:
+        snapshot = store.load(user_id, thread_id) if store else None
+        if snapshot and snapshot["file_id"] != data["file_id"]:
+            snapshot = None  # 新附件不能继承另一份简历的投递目标。
         key = CacheManager.extraction_key(user_id, thread_id, data["file_id"],
                                           data["text"], _extraction_version())
         extraction = None
-        if cache:
+        if snapshot and snapshot["extraction_key"] == key:
+            extraction = Extraction.model_validate(snapshot["extraction"]).model_dump()
+            trace.record("extraction_reuse", source="local_state")
+        if extraction is None and cache:
             try:
                 cached = cache.get_extraction(key)
                 if cached is not None:
                     extraction = Extraction.model_validate(cached).model_dump()
             except Exception as error:
-                # Redis 不可用/旧缓存损坏不能阻止分析；不记录异常正文或缓存内容。
                 trace.record("cache_error", operation="read", error_type=type(error).__name__)
                 cache = None
         trace.record("cache", hit=extraction is not None)
         if extraction is None:
             result = build_extraction_graph(model, emit_state, trace).invoke({"resume_text": data["text"]})
-            extraction = Extraction.model_validate({key: result[key] for key in Extraction.model_fields}).model_dump()
+            extraction = Extraction.model_validate({field: result[field] for field in Extraction.model_fields}).model_dump()
             if cache:
                 try:
                     cache.set_extraction(key, extraction)
@@ -72,22 +87,39 @@ def evaluate_resume(data, user_id, thread_id, model, cache=None, position=None,
         elif emit_state:
             emit_state("已复用简历提取结果")
 
-        # 覆盖目标只作用于本轮，不把用户补充的岗位写入可复用事实缓存。
-        if position and position.strip():
-            extraction["position"] = position.strip()
-        if not extraction.get("position"):
-            trace.finish("needs_position")
-            return "简历上没有岗位信息，你想投递什么岗位？"
-
-        extraction["page_count"] = data["page_count"]
-        # 摘要未覆盖的可实习周期、奖项等仍能在综合阶段核对，不能把漏提取当作原文没写。
-        extraction["resume_text"] = data["text"]
+        # 先保存解析结果，再识别上下文；后者失败也不必重新解析。
+        previous = GuidanceContext.model_validate(snapshot["context"] if snapshot else {}).model_dump()
+        if store:
+            store.save(user_id, thread_id, data["file_id"], key, extraction, previous, "waiting")
         if emit_state:
-            emit_state("简历信息评估中")
-        result = build_scoring_graph(model, emit_state, output, trace).invoke(extraction)
+            emit_state("识别投递目标中")
+        context = build_context_graph(model, trace).invoke({
+            "resume_text": data["text"], "position": extraction["position"],
+            "user_message": user_message, "previous_context": previous,
+        })["context"]
+        context = GuidanceContext.model_validate(context)
+        if store:
+            store.save(user_id, thread_id, data["file_id"], key, extraction, context.model_dump(),
+                       "waiting" if context.missing_fields() else "ready")
+        if context.missing_fields():
+            trace.finish("needs_context")
+            # 无持久化 store 的独立调用不能谎称已保存状态。
+            return clarification(context) if store else clarification(context).replace(
+                "，已暂存解析结果和已确认的投递信息", "")
+
+        state = {**extraction, "page_count": data["page_count"], "resume_text": data["text"],
+                 "context": context.model_dump()}
+        if emit_state:
+            emit_state("简历证据审阅中")
+        result = build_scoring_graph(model, emit_state, output, trace).invoke(state)
         trace.finish("success")
         return result["report"]
+    except ReportStreamInterrupted as error:
+        trace.record("failure", error_type=type(error.__cause__).__name__)
+        trace.finish("incomplete")
+        # 与已推送内容完全一致，外层不会再追加/重复整份报告。
+        return error.report
     except Exception as error:
         trace.record("failure", error_type=type(error).__name__)
         trace.finish("failed")
-        return "简历分析失败，请稍后重试。"
+        return "简历指导生成失败，请稍后重试。"

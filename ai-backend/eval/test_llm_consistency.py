@@ -1,6 +1,4 @@
-"""真实调用 LLM 评测：同一份简历跑两次，验证总分波动在容差内。
-费用是 schema/grounding 测试的两倍，默认不跑，用 `pytest -m consistency` 显式执行。
-"""
+"""重复真实调用的有限稳定性抽查，不替代人工语义审阅。显式 -m consistency 执行会计费。"""
 
 import pytest
 
@@ -8,14 +6,12 @@ from eval.helpers import run_eval_pipeline
 
 pytestmark = pytest.mark.consistency
 
-SCORE_VARIANCE_TOLERANCE = 15
 
-
-def test_overall_score_is_stable_across_runs(eval_graph, golden_resume):
-    first = run_eval_pipeline(eval_graph, golden_resume.resume_text)
-    second = run_eval_pipeline(eval_graph, golden_resume.resume_text)
-
-    diff = abs(first.overall_score - second.overall_score)
-    assert diff <= SCORE_VARIANCE_TOLERANCE, (
-        f"同一简历两次评分波动过大: {first.overall_score} vs {second.overall_score}"
-    )
+def test_main_judgment_and_evidence_do_not_flip(eval_graph, golden_resume):
+    # 校招是本评测显式指定的测试场景，不代表样本真实投递意图。
+    first = run_eval_pipeline(eval_graph, golden_resume.resume_text, golden_resume.position, "校招")
+    second = run_eval_pipeline(eval_graph, golden_resume.resume_text, golden_resume.position, "校招")
+    assert {first.match_status, second.match_status} != {"有较充分支持", "存在明显差距"}
+    first_evidence = {"".join(q.split()) for section in first.sections for q in section.evidence}
+    second_evidence = {"".join(q.split()) for section in second.sections for q in section.evidence}
+    assert any(a in b or b in a for a in first_evidence for b in second_evidence), "重复运行没有共同引用锚点"

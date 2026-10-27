@@ -1,4 +1,4 @@
-"""单次评分的安全性能指标：不记录简历、岗位、模型正文或异常正文。"""
+"""单次指导的安全性能指标：不记录简历、岗位、模型正文或异常正文。"""
 
 import threading
 import time
@@ -18,7 +18,7 @@ class EvaluationTrace:
 
     def record(self, event, **fields):
         metric = {"run_id": self.run_id, "event": event, **fields}
-        get_agent_logger().info(0, "resume_performance", "评分性能", metric)
+        get_agent_logger().info(0, "resume_performance", "指导性能", metric)
         if self.observer:
             self.observer(metric)
 

@@ -1,25 +1,27 @@
-"""Multi-Agent 评分节点：事实提取、证据依赖、规则算分与确定性展示。"""
+"""事实提取、投递上下文识别、证据审阅和确定性渲染。"""
 
 import json
 import os
+from contextlib import closing
 from datetime import date
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agent.schema import (
-    AnalystResult, DIMENSION_LABELS, DIMENSION_WEIGHTS, Extraction, Report, Synthesis, validate_dimension,
-)
+from agent.report_stream import (INTERRUPTED, ReportJSONStream, ReportStreamInterrupted,
+                                 ReportStreamRenderer, render_report)
+from agent.resume_context import normalize_text, resume_target_hints
+from agent.schema import (AnalystResult, ContextResolution, ContextSignal, Extraction,
+                          GuidanceContext, Report, Synthesis)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _load_prompt(name: str) -> str:
+def _load_prompt(name):
     with open(os.path.join(SCRIPT_DIR, "prompts", name), encoding="utf-8") as file:
         return file.read().strip()
 
 
-def _call_llm(prompt: str, text: str, model, trace=None, stage="internal") -> dict:
-    """内部 JSON 调用不向聊天泄漏 token；非法输出抛错，由所在节点有限重试。"""
+def _call_llm(prompt, text, model, trace=None, stage="internal"):
     response = model.invoke(
         [SystemMessage(content=prompt), HumanMessage(content=text)],
         config={"callbacks": [], "run_name": f"resume_{stage}", "tags": ["multi_agent_internal"]},
@@ -35,124 +37,156 @@ def _call_llm(prompt: str, text: str, model, trace=None, stage="internal") -> di
     return result
 
 
-def resume_analyst_node(state: dict, model, emit_state=None, trace=None) -> dict:
+def _structured_call(prompt_name, payload, schema, model, trace, stage):
+    prompt = _load_prompt(prompt_name) + "\n输出 JSON Schema：\n" + json.dumps(
+        schema.model_json_schema(), ensure_ascii=False)
+    return schema.model_validate(_call_llm(
+        prompt, json.dumps(payload, ensure_ascii=False, separators=(",", ":")), model, trace, stage))
+
+
+def _contains(text, quote):
+    # 只忽略兼容字形和提取空白差异，不允许模型拼接或改写证据。
+    normalized = "".join(normalize_text(quote).split())
+    return bool(normalized) and normalized in "".join(normalize_text(text).split())
+
+
+def _validate_evidence(items, resume_text):
+    for item in items:
+        for quote in item.evidence:
+            if not _contains(resume_text, quote):
+                raise ValueError("引用证据不在简历原文中")
+
+
+def resume_analyst_node(state, model, emit_state=None, trace=None):
     if not state.get("resume_text", "").strip():
         raise ValueError("缺少简历文本")
     if emit_state:
         emit_state("提取简历信息中")
     output = _call_llm(_load_prompt("resume_analyst.md"),
-                       f"简历文本：\n{state['resume_text']}", model, trace, "extraction")
+                       f"简历文本：\n{normalize_text(state['resume_text'])}", model, trace, "extraction")
     return Extraction.model_validate(output).model_dump()
 
 
-def _analyst_input(state: dict, key: str) -> str:
-    data = {key: state.get(key) or [], "position": state.get("position")}
-    if key == "skills":
-        # 技能判断必须等待项目分析，并同时拿到项目/经历原始事实，不能只信下游结论。
-        data.update(projects=state.get("projects") or [],
-                    experiences=state.get("experiences") or [],
-                    project_result=state["project_result"],
-                    resume_text=state.get("resume_text", ""))
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+def context_node(state, model, trace=None):
+    previous = GuidanceContext.model_validate(state.get("previous_context") or {})
+    hints = resume_target_hints(state["resume_text"])
+    resolution = _structured_call("context_resolver.md", {
+        "evaluation_date": date.today().isoformat(), "resume_text": normalize_text(state["resume_text"]),
+        "extracted_position": state.get("position"), "resume_target_hints": hints,
+        "user_message": state.get("user_message", ""), "previous_context": previous.model_dump(),
+    }, ContextResolution, model, trace, "context")
+    result = GuidanceContext.model_validate(resolution.model_dump(exclude={"clear_fields", "clear_evidence"}))
+    if resolution.clear_fields and not _contains(state.get("user_message", ""), resolution.clear_evidence or ""):
+        raise ValueError("清空投递信息需要本轮用户原句")
+    # 模型不得悄悄丢失已确认项；用户明确否定/撤回时允许清空后追问。
+    for key in GuidanceContext.model_fields:
+        if key in resolution.clear_fields:
+            setattr(result, key, None)
+            continue
+        signal = getattr(result, key)
+        old = getattr(previous, key)
+        if signal is None:
+            setattr(result, key, old)
+            continue
+        if old is not None and signal == old:
+            continue
+        source = state.get("user_message", "") if signal.source == "user" else state["resume_text"]
+        if not _contains(source, signal.evidence):
+            raise ValueError("投递信息缺少来源原句")
+        # 旧用户目标不能被简历意向覆盖；明确标题则可纠正旧的简历推断。
+        if old is not None and old.source == "user" and signal.source == "resume":
+            setattr(result, key, old)
+            continue
+        explicit = hints.get(key)
+        grounded_heading = (explicit and signal.source == "resume"
+                            and _contains(explicit["evidence"], signal.evidence)
+                            and (key != "application_type" or signal.value == explicit["value"]))
+        if old is not None and old.inferred and not signal.inferred and signal.source != "user" and not grounded_heading:
+            raise ValueError("推断的投递信息需要用户确认")
+    for key, hint in hints.items():
+        signal = getattr(result, key)
+        if key not in resolution.clear_fields and (signal is None or (signal.inferred and signal.source == "resume")):
+            # 明确标题兜底只补遗漏，不能覆盖用户目标或撤回指令。
+            setattr(result, key, ContextSignal.model_validate(hint))
+    return {"context": result.model_dump()}
 
 
-def _analyst(state, model, key, dimension, trace=None):
-    prompt = (_load_prompt(f"{key}_analyst.md")
-              + "\n只输出1–3条精炼理由，每条约80–120字，保留关键证据、判断与重要信息不足，不逐条复述整个输入。"
-              + "\n输出 JSON Schema：\n" + json.dumps(AnalystResult.model_json_schema(), ensure_ascii=False))
-    result = AnalystResult.model_validate(_call_llm(
-        prompt, _analyst_input(state, {"skill": "skills", "project": "projects",
-                                      "experience": "experiences", "education": "education"}[key]),
-        model, trace, key))
-    # 模型只判断原始分，权重换算交给代码，消除原始分/加权分混淆。
-    weighted = {"score": round(result.raw_score * DIMENSION_WEIGHTS[dimension] / 100, 2),
-                "detail": result.detail}
-    return {f"{key}_result": validate_dimension(weighted, dimension)}
+def _review_input(state):
+    return {
+        "evaluation_date": date.today().isoformat(), "resume_text": normalize_text(state["resume_text"]),
+        "context": state["context"], "page_count": state.get("page_count", 1),
+        "facts": {key: state.get(key) or [] for key in ("skills", "projects", "experiences", "education")},
+    }
+
+
+def _analyst(state, model, key, trace=None):
+    payload = _review_input(state)
+    if key == "skill":
+        payload.update(project_result=state["project_result"], experience_result=state["experience_result"])
+    result = _structured_call(f"{key}_analyst.md", payload, AnalystResult, model, trace, key)
+    _validate_evidence(result.findings, state["resume_text"])
+    return {f"{key}_result": result.model_dump()}
 
 
 def skill_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "skill", "skill_match", trace)
+    return _analyst(state, model, "skill", trace)
 
 
 def project_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "project", "project_depth", trace)
+    return _analyst(state, model, "project", trace)
 
 
 def experience_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "experience", "experience", trace)
+    return _analyst(state, model, "experience", trace)
 
 
 def education_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "education", "education", trace)
+    return _analyst(state, model, "education", trace)
 
 
-def layout_analyst_node(state, model=None):
-    """复现既有页数规则，不再请求模型；并非 PDF 视觉布局分析。"""
-    pages = state.get("page_count", 1)
-    if not isinstance(pages, int) or isinstance(pages, bool) or pages < 1:
-        raise ValueError("无效页数")
-    result = {"score": 5 if pages == 1 else 0,
-              "detail": ["简历为1页，篇幅合理" if pages == 1 else
-                         f"简历共{pages}页，页数超过1页，建议缩减到1页"]}
-    return {"layout_result": result}
+def synthesis_node(state, model, trace=None, emit_chunk=None):
+    payload = _review_input(state)
+    payload["reviews"] = {key: state[f"{key}_result"] for key in ("project", "experience", "skill", "education")}
+    if emit_chunk is None:
+        result = _structured_call("report_generator.md", payload, Synthesis, model, trace, "synthesis")
+        _validate_evidence([*result.sections, *result.actions, *result.interview_questions], state["resume_text"])
+        return {"synthesis": result.model_dump()}
 
-
-def _dimensions(state):
-    return {name: validate_dimension(state[f"{key}_result"], name) for name, key in (
-        ("skill_match", "skill"), ("project_depth", "project"), ("experience", "experience"),
-        ("education", "education"), ("layout", "layout"),
-    )}
-
-
-def _escape(text):
-    # 模型内容只作为普通段落/表格文本展示，不允许注入 HTML 或破坏表格。
-    import html
-    return html.escape(str(text), quote=False).replace("|", "\\|").replace("\n", " ")
-
-
-def scorecard_node(state):
-    """校验维度并准备评分表，仅写入内部状态，不提前输出半份分析。"""
-    dimensions = _dimensions(state)
-    total = round(sum(value["score"] for value in dimensions.values()), 2)
-    lines = [f"**目标岗位：{_escape(state['position'])}**",
-             f"**总分：{total:g} / 100**", "", "| 维度 | 得分 | 评价 |", "| --- | ---: | --- |"]
-    for name, value in dimensions.items():
-        lines.append(f"| {DIMENSION_LABELS[name]} | {value['score']:g} / {DIMENSION_WEIGHTS[name]} | "
-                     + "；".join(_escape(item) for item in value["detail"]) + " |")
-    lines.extend(["", ""])
-    return {"scorecard": "\n".join(lines)}
-
-
-def synthesis_node(state, model, trace=None):
-    """保留完整跨维度综合分析，只不让模型重复算分、重写评分表。"""
-    text = json.dumps({
-        "evaluation_date": date.today().isoformat(),
-        "resume_text": state.get("resume_text", ""),
-        "position": state["position"], "dimensions": _dimensions(state),
-        "facts": {key: state.get(key) or [] for key in ("skills", "projects", "experiences", "education")},
-    }, ensure_ascii=False, separators=(",", ":"))
+    parser = ReportJSONStream()
+    renderer = ReportStreamRenderer(state["context"], emit_chunk,
+                                    lambda items: _validate_evidence(items, state["resume_text"]))
     prompt = _load_prompt("report_generator.md") + "\n输出 JSON Schema：\n" + json.dumps(
         Synthesis.model_json_schema(), ensure_ascii=False)
-    result = Synthesis.model_validate(_call_llm(prompt, text, model, trace, "synthesis"))
-    # 页数风险是确定规则，不能依赖模型是否记得重述。
-    if state["layout_result"]["score"] < DIMENSION_WEIGHTS["layout"]:
-        layout_risk = state["layout_result"]["detail"][0]
-        if not any("页" in risk for risk in result.risks):
-            result.risks = result.risks[:4] + [layout_risk]
-    return {"synthesis": result.model_dump()}
+    response = None
+    try:
+        with closing(model.stream(
+            [SystemMessage(content=prompt), HumanMessage(content=json.dumps(payload, ensure_ascii=False))],
+            config={"callbacks": [], "run_name": "resume_synthesis", "tags": ["multi_agent_internal"]},
+        )) as chunks:
+            for chunk in chunks:
+                response = chunk if response is None else response + chunk
+                for event in parser.feed(chunk.content):
+                    renderer.accept(*event)
+        result = Synthesis.model_validate(parser.finish())
+        report = Report(context=state["context"], **result.model_dump())
+        renderer.finish(report)
+    except Exception as error:
+        if renderer.parts:
+            # 已展示的正文不可撤回，禁止图节点自动重试而重复输出。
+            renderer.send(INTERRUPTED)
+            raise ReportStreamInterrupted(renderer.content) from error
+        raise
+    finally:
+        if trace and response is not None:
+            trace.usage("synthesis", response)
+    return {"synthesis": result.model_dump(), "streamed_report": renderer.content}
 
 
 def report_generator_node(state, model=None, emit_state=None, emit_chunk=None):
-    dimensions = _dimensions(state)
-    report = Report(overall_score=round(sum(item["score"] for item in dimensions.values()), 2),
-                    dimensions=dimensions, **state["synthesis"])
-    lines = []
-    for title, items in (("优势", report.strengths), ("风险与改进建议", report.risks),
-                         ("针对性面试追问", report.interview_questions)):
-        lines.extend([f"## {title}", ""] + [f"- {_escape(item)}" for item in items] + [""])
-    lines.extend(["## 总结", "", _escape(report.summary), "",
-                  "> 以上是基于简历文本和现有评分规则的评估，不代表实际能力或录用概率。", ""])
-    content = state["scorecard"] + "\n".join(lines)
-    if emit_chunk:
+    report = Report(context=state["context"], **state["synthesis"])
+    if report.context.missing_fields():
+        raise ValueError("投递上下文尚未确认")
+    content = state.get("streamed_report") or render_report(report)
+    if emit_chunk and not state.get("streamed_report"):
         emit_chunk(content)
     return {"report": content, "report_data": report.model_dump()}

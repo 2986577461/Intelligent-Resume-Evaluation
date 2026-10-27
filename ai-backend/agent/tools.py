@@ -95,34 +95,41 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 
 
 @tool(return_direct=True)
-def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None,
-                   position: str | None = None) -> str:
-    """对简历进行多维度专业评分（技能、项目深度、经验、学历），直接返回包含评分、优势、风险、追问和总结的完整分析。
-    参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
-    position：仅在"上一次调用本工具提示简历缺少目标岗位、且你已经询问过用户"之后才传入用户回答的岗位名称,
-    正常首次调用不要传这个参数。
-"""
+def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None) -> str:
+    """先解析简历，再给出面试官视角的证据判断与修改建议，不评分。
+    用户请求分析、评价、指导、优化简历或补充上一轮投递信息时使用。
+    有 file_id 时直接使用；无附件且正在补充投递信息时可以省略 file_id 和 index，
+    系统会恢复本会话暂存的文件。其他无附件场景先 list_resumes 获取索引。
+    目标岗位、实习/校招/社招和可选 JD 从本轮原始消息识别，不要在解析前强制询问。
+    """
     from agent.scoring import create_scoring_model, evaluate_resume
     from agent.telemetry import EvaluationTrace
     from state.manager import get_cache_manager
 
+    from agent.guidance_state import GuidanceStore
+    store = GuidanceStore()
     user_id, thread_id = _get_user_thread(config)
-    data = _get_content_by_file_id_or_index(thread_id, file_id, index, user_id)
-    if not data:
-        return "未找到该序号对应的简历文件。"
-
     runtime = config.get("configurable", {})
     trace = EvaluationTrace(runtime.get("record_metric"))
     try:
+        # 本轮新附件优先；否则恢复当前文件，不依赖模型记住文件 ID。
+        file_id = runtime.get("file_id") or file_id
+        if not file_id and index is None:
+            pending = store.load(user_id, thread_id)
+            file_id = pending["file_id"] if pending else None
+        data = _get_content_by_file_id_or_index(thread_id, file_id, index, user_id)
+        if not data:
+            return "未找到对应的简历文件，请上传简历或指定本会话中的文件。"
         model = create_scoring_model()
         try:
             cache = get_cache_manager()
         except Exception as error:
             trace.record("cache_error", operation="initialize", error_type=type(error).__name__)
             cache = None
-        return evaluate_resume(data, user_id, thread_id, model, cache, position,
-                               runtime.get("emit_state"), runtime.get("emit_chunk"), trace)
+        return evaluate_resume(data, user_id, thread_id, model, cache,
+                               user_message=runtime.get("user_message", ""), store=store,
+                               emit_state=runtime.get("emit_state"), emit_chunk=runtime.get("emit_chunk"), trace=trace)
     except Exception as error:
         trace.record("failure", error_type=type(error).__name__)
         trace.finish("failed")
-        return "简历分析失败，请稍后重试。"
+        return "简历指导生成失败，请稍后重试。"

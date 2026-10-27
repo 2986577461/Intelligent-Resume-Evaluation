@@ -1,17 +1,18 @@
-# 智能简历评估
+# 简历指导
 
 [![CI](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/2986577461/Intelligent-Resume-Evaluation/actions/workflows/ci.yml)
 
-基于 Vue 3、FastAPI 和 LangGraph 的对话式简历评估项目。上传 PDF 或图片简历后，系统提取简历信息，以四个分析 Agent 加版式规则计算完成五维评估；技能分析依赖项目分析和项目原始事实，最后输出 Markdown 评分表、综合建议和针对性的面试问题。
+基于 Vue 3、FastAPI 和 LangGraph 的对话式简历指导项目。上传 PDF 或图片简历后，系统先提取事实，再结合用户消息识别岗位和投递类型；缺项时暂存并追问，补充后继续。四个证据审阅节点从项目、经历、技能、教育出发，综合生成面试官视角的判断、疑问与优先行动，不做数字评分。
 
 账号使用本地邮箱＋密码注册、登录，不依赖外部用户服务。模型、视觉识别和联网搜索仍需要相应的 API 服务，调用费用由部署者承担。
 
 ## 功能
 
-- **简历识别**：PDF 文本提取；扫描版 PDF 和图片通过 DeepSeek 视觉模型 OCR。
-- **多维度评估**：LangGraph 混合编排：项目→技能，经历/学历并行，版式规则计算；程序计算加权分、总分和评分表，模型保留完整跨维度综合分析。
-- **提取复用**：成功提取按用户/会话/文件、文本指纹、协议/提示词/模型版本缓存；缺岗位续评和正常重复分析均可复用，Redis 不可用时降级为重新提取。
-- **流式对话**：通过 SSE 展示处理状态和报告增量，支持联网搜索和后续追问。
+- **简历识别**：PDF 按页面位置重建阅读顺序，减少行内代码和标签被提到末尾的问题；归一化特殊字形，识别明确岗位标题，避免重复询问。位置排序不是通用多栏布局识别。扫描版 PDF 和图片通过 DeepSeek 视觉模型 OCR。
+- **面试官视角指导**：项目与经历共同支持技能核验，教育背景对照已知投递要求，最终输出总体判断、分模块阅读意见、优先修改清单和具体追问，不用学校、项目数量或页数打分。
+- **先解析再续评**：从消息和简历识别岗位及实习/校招/社招，信息充分就分析，缺什么问什么。默认按岗位名称分析，JD 是可选补充，提供时进一步对照具体职责和任职要求，不提供也正常分析。事实与投递上下文分开暂存，Redis 故障也不丢失已确认信息。
+- **提取复用**：成功提取按用户/会话/文件、文本指纹、协议/提示词/模型版本缓存；当前文件的提取和投递上下文还会本地持久化，用于追问后恢复。
+- **流式对话**：通过 SSE 展示处理状态；综合模型生成期间，完整且已校验的段落逐步展示，不等待整份报告结束。中途失败会明确标注报告未完成，支持联网搜索和后续追问。
 - **会话管理**：保存历史消息和附件，按登录账号隔离访问。
 - **本地账号**：邮箱注册、登录、恢复登录状态和退出登录。
 
@@ -36,7 +37,7 @@
 │   └── vite.config.js        # 开发代理
 ├── ai-backend/
 │   ├── auth/                 # 本地账号、密码散列、服务端登录会话
-│   ├── agent/                # 评分图、提示词、Agent 工具和 SSE
+│   ├── agent/                # 指导图、投递续评状态、提示词、工具和 SSE
 │   ├── conversation/         # 会话、消息、附件持久化
 │   ├── files/                # 文件上传、提取、预览与清理
 │   ├── common/               # 视觉模型客户端、日志、同源请求保护
@@ -69,15 +70,15 @@ cp ai-backend/.env.example ai-backend/.env
 
 | 配置项 | 用途 |
 | --- | --- |
-| `DEEPSEEK_API_KEY` | 对话、评分和视觉识别所需的 DeepSeek 密钥 |
-| `DEEPSEEK_BASE_URL` | 评分与视觉识别的 API 地址，默认 `https://api.deepseek.com`；评分兼容旧 `DEEPSEEK_API_BASE` |
+| `DEEPSEEK_API_KEY` | 对话、指导和视觉识别所需的 DeepSeek 密钥 |
+| `DEEPSEEK_BASE_URL` | 指导与视觉识别的 API 地址，默认 `https://api.deepseek.com`；指导兼容旧 `DEEPSEEK_API_BASE` |
 | `DEEPSEEK_VISION_MODEL` | OCR 模型，默认 `deepseek-v4-flash-vision-exp`；需确认账号有对应模型权限 |
 | `TAVILY_API_KEY` | 联网搜索密钥；当前应用启动时会初始化搜索工具 |
-| `REDIS_URL` | 默认 `redis://localhost:6379/0`，成功提取缓存默认保留 1 小时；故障不阻止评分 |
+| `REDIS_URL` | 默认 `redis://localhost:6379/0`，成功提取缓存默认保留 1 小时；故障不阻止指导或本地续评 |
 | `SESSION_COOKIE_SECURE` | 本地 HTTP 使用 `false`；生产 HTTPS 必须设为 `true` |
-| `MODEL_NAME`（可选） | 评分工具和真实模型评测的模型名，默认 `deepseek-v4-flash`；主对话模型目前仍在 `main.py` 中指定 |
+| `MODEL_NAME`（可选） | 指导工具和真实模型评测的模型名，默认 `deepseek-v4-flash`；主对话模型目前仍在 `main.py` 中指定 |
 | `APP_DATA_DIR`（可选） | 账号、登录会话、消息和附件数据库目录，默认 `ai-backend/conversation/db/`；不改变 Agent 检查点目录 |
-| `SCORING_REQUEST_TIMEOUT_SECONDS`（可选） | 评分节点单次请求的传输超时，默认 60 秒；SDK 不自动重试，图节点最多尝试 2 次 |
+| `SCORING_REQUEST_TIMEOUT_SECONDS`（可选） | 指导节点单次传输超时，保留旧变量名，默认 60 秒；SDK 不自动重试，图节点最多尝试 2 次 |
 
 模型名称是否可用取决于服务商和账号权限，配置密钥不代表一定有访问权限。
 
@@ -140,7 +141,7 @@ npm run dev
 
 | 路径 | 内容 |
 | --- | --- |
-| `ai-backend/conversation/db/app.db` | 账号、登录会话、限流计数、聊天消息、原始附件与提取文本 |
+| `ai-backend/conversation/db/app.db` | 账号、登录会话、限流计数、聊天消息、原始附件、提取文本及当前简历续评上下文 |
 | `ai-backend/agent/db/conversations.db` | Agent 对话检查点 |
 | `ai-backend/common/logs/` | Agent 日志 |
 
@@ -148,7 +149,7 @@ SQLite 使用 WAL，备份应使用 SQLite 备份工具，或停服后连同相�
 
 ## 测试与 CI
 
-离线测试不需要模型密钥或 Redis，包括评分图/JSON 解析，以及注册、登录、会话过期、退出、文件上传和跨账号访问隔离。建议在独立 Python 3.12 环境中执行：
+离线测试不需要模型密钥或 Redis，包括指导图、按缺项追问、持久化恢复、引用回查，以及注册、登录、会话过期、退出、文件上传和跨账号访问隔离。建议在独立 Python 3.12 环境中执行：
 
 ```bash
 python3.12 -m venv "$HOME/.venvs/resume-evaluation-ci"
@@ -170,7 +171,7 @@ python -m pytest -m llm -v
 python -m pytest -m consistency -v
 ```
 
-评测直接使用生产 `report_data` 协议；用户端 Markdown 由同一份结构化结果渲染，不再从 Markdown 中解析 JSON。离线测试不能证明真实模型的语义质量。指定 PDF 的 SDK 离线回归、真实付费基准、缓存范围和性能权衡见 [混合评分工作流](docs/scoring-workflow.md)。
+评测直接使用生产 `report_data` 指导协议；用户端 Markdown 由同一份结构化结果渲染。离线测试不能证明真实模型的语义质量，引用存在也不代表判断正确。先解析、续评状态的数据留存、SDK 离线回归与成本边界见 [简历指导工作流](docs/scoring-workflow.md)。
 
 GitHub Actions 在 push、PR 更新时执行前端构建、后端离线测试和部署脚本离线测试，不自动部署。完整说明见 [docs/ci.md](docs/ci.md)。
 

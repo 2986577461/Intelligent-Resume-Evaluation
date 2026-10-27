@@ -96,6 +96,21 @@ def init_app_db():
                      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
                  )
                  """)
+    conn.execute("""
+                 CREATE TABLE IF NOT EXISTS resume_guidance_contexts
+                 (
+                     user_id TEXT NOT NULL,
+                     thread_id TEXT NOT NULL,
+                     file_id TEXT NOT NULL,
+                     extraction_key TEXT NOT NULL,
+                     extraction TEXT NOT NULL,
+                     context TEXT NOT NULL,
+                     status TEXT NOT NULL CHECK(status IN ('waiting', 'ready')),
+                     updated_at TEXT NOT NULL,
+                     PRIMARY KEY (user_id, thread_id),
+                     FOREIGN KEY (file_id) REFERENCES uploaded_files(file_id) ON DELETE CASCADE
+                 )
+                 """)
     conn.commit()
     conn.close()
 

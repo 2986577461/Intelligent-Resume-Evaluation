@@ -26,7 +26,7 @@ def load_system_prompt() -> str:
         with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return "你是智能简历评估助手"
+        return "你是简历指导助手"
 
 
 def _format_search_results(tool_content: str) -> str:
@@ -81,6 +81,15 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         if filename:
             save_message_attachment(user_msg_id, file_id, filename)
             current_question.update({"file_id":file_id,"filename":filename})
+    if not file_id:
+        from agent.guidance_state import GuidanceStore
+        from agent.schema import GuidanceContext
+        pending = GuidanceStore().load(user_id, thread_id)
+        if pending and pending["status"] == "waiting":
+            current_question["pending_analysis"] = {
+                "file_id": pending["file_id"],
+                "missing_fields": GuidanceContext.model_validate(pending["context"]).missing_fields(),
+            }
     alog = get_agent_logger()
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -102,7 +111,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             tools=tools or [],
             checkpointer=checkpointer,
             system_prompt=load_system_prompt(),
-            # 简历原文 / 评分报告等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
+            # 简历原文 / 指导报告等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
             # 超过 token 阈值后自动清理较早的工具结果（只保留最近几条），避免上下文随轮次无限膨胀
             middleware=[
                 ContextEditingMiddleware(
@@ -114,7 +123,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=state))
 
         def _emit_chunk(text: str):
-            # return_direct 工具内部真正流式生成时（如 report_generator 逐 token 输出），
+            # return_direct 工具内部按已校验段落流式生成时，
             # 通过这里把每段增量实时转发给前端，标记 tool_streamed 避免 ToolMessage 分支重复整段推送
             nonlocal tool_streamed
             tool_streamed = True
@@ -123,6 +132,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "user_id": user_id, "file_id": file_id,
+                             "user_message": question,
                              "emit_state": _emit_state, "emit_chunk": _emit_chunk}}
         step = 0
         alog.info(step, "user_asking", "用户提问", question)
@@ -160,7 +170,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         if name and name != current_tool_name:
                             current_tool_name = name
                             if name == "analyze_resume":
-                                alog.info(0, "resume_route_timing", "评分工具路由耗时", {
+                                alog.info(0, "resume_route_timing", "指导工具路由耗时", {
                                     "elapsed_seconds": round(time.perf_counter() - route_started, 4),
                                 })
                             tool_streamed = False
@@ -222,7 +232,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                     try:
                         generate_and_save_title(thread_id, question, _full, model)
                     finally:
-                        alog.info(0, "title_timing", "标题阶段耗时（不计入评分）", {
+                        alog.info(0, "title_timing", "标题阶段耗时（不计入指导）", {
                             "elapsed_seconds": round(time.perf_counter() - title_started, 4),
                         })
                     print(f'  [Token] prompt={_last_meta.get("input_tokens", "?")} '

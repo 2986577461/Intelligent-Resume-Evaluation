@@ -800,18 +800,15 @@ async function send() {
           _setStatus("Searching the web...", msg);
           if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
         } else if (state.state === "Analyzing") {
-          _setStatus("Analyzing resume...", msg);
-        } else if (state.state === "提取简历信息中") {
-          _setStatus("提取简历信息中...", msg);
-        } else if (state.state === "简历信息评估中") {
-          _setStatus("简历信息评估中...", msg);
+          _setStatus("正在生成简历指导...", msg);
         } else if (
-          ["已复用简历提取结果", "项目分析完成，开始核验技能佐证", "技能分析完成",
-            "经历分析完成", "学历分析完成", "版式规则计算完成", "评分已完成，综合分析生成中"].includes(state.state)
+          ["提取简历信息中", "识别投递目标中", "简历证据审阅中", "已复用简历提取结果",
+            "项目证据审阅完成", "经历证据审阅完成", "教育背景核对完成", "技能关联核验完成",
+            "跨模块复核与指导生成中"].includes(state.state)
         ) {
           _setStatus(state.state + "...", msg);
-        } else if (state.state === "评估报告生成中") {
-          _setStatus("评估报告生成中...", msg);
+        } else if (state.state === "指导报告生成中") {
+          _setStatus("指导报告生成中...", msg);
         } else if (state.state === "Parsing") {
           _setStatus("Parsing resume...", msg);
         } else if (state.state === "search_done") {

@@ -7,6 +7,7 @@ import fitz
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form
 from fastapi.responses import Response
 
+from agent.resume_context import normalize_text
 from conversation.service import get_current_user, save_file_meta, get_owned_file, get_app_db, require_thread_access
 
 files_router = APIRouter(prefix="/api/files", tags=["文件管理"])
@@ -23,6 +24,7 @@ MIME_MAP = {
 
 
 def _clean_pdf_text(text: str) -> str:
+    text = normalize_text(text)
     text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)
     lines = []
     for line in text.splitlines():
@@ -53,7 +55,9 @@ async def upload_file(file: UploadFile = File(...),
         try:
             doc = fitz.open(stream=raw, filetype="pdf")
             page_count = len(doc)
-            text = "".join(page.get_text() for page in doc)
+            # PDF 内容流中的绘制顺序不等于阅读顺序；按位置重建行内代码和标签。
+            # 这是位置排序，不是通用多栏/表格布局识别；页间显式分隔，避免粘连。
+            text = "\n".join(page.get_text(sort=True) for page in doc)
             if not text.strip():
                 # 扫描版 PDF 没有文本层，兜底把每页转成图片走 OCR
                 from common.vision_client import extract_text_from_image
