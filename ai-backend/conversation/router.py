@@ -34,9 +34,11 @@ def delete_conversation(thread_id: str, user_id: str = Depends(get_current_user)
         cur = conn.execute(
             "DELETE FROM conversations WHERE thread_id = ? AND user_id = ?", (thread_id, user_id)
         )
-        conn.commit()
         if cur.rowcount == 0:
+            conn.rollback()
             raise HTTPException(status_code=404, detail="会话不存在")
+        conn.execute("DELETE FROM resume_guidance_contexts WHERE thread_id=? AND user_id=?", (thread_id, user_id))
+        conn.commit()
     finally:
         conn.close()
 

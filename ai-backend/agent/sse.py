@@ -28,6 +28,11 @@ class SSE:
         return None
 
     @staticmethod
+    def content(text: str) -> str:
+        # JSON 保留真正换行、字面量 \\n 和分块边界，也避免正文冒充控制信号。
+        return "[TEXT]" + json.dumps(text, ensure_ascii=False)
+
+    @staticmethod
     def state(**kw) -> str:
         return "[STATE]" + json.dumps(kw, ensure_ascii=False)
 

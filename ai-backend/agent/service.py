@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from langchain.agents import create_agent
@@ -25,7 +26,7 @@ def load_system_prompt() -> str:
         with open(SYSTEM_PROMPT_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
     except FileNotFoundError:
-        return "你是智能简历评估助手"
+        return "你是简历指导助手"
 
 
 def _format_search_results(tool_content: str) -> str:
@@ -66,13 +67,16 @@ def _parse_web_results(raw: str, info: dict):
 
 async def stream_chat(question: str, thread_id: str, user_id: str = "",
                       model=None, tools: list = None,
-                      file_id: str = ""):
+                      file_id: str = "", discussion=None):
     """SSE 流式生成器。model 和 tools 由 main.py 传入。"""
     from conversation.service import (ensure_conversation_and_save_user, save_ai_message,
                                       generate_and_save_title, save_message_attachment)
-    thread_id, user_msg_id = ensure_conversation_and_save_user(thread_id, question, user_id)
+    message_info = {"discussion_context": discussion.model_dump()} if discussion else None
+    thread_id, user_msg_id = ensure_conversation_and_save_user(thread_id, question, user_id, message_info)
     # 用户上传的消息附带文件时，则绑定此消息
     current_question= {"question": question}
+    if discussion:
+        current_question["discussion_context"] = discussion.for_agent()
 
     if file_id:
         from conversation.service import get_filename
@@ -80,6 +84,15 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         if filename:
             save_message_attachment(user_msg_id, file_id, filename)
             current_question.update({"file_id":file_id,"filename":filename})
+    if not file_id:
+        from agent.guidance_state import GuidanceStore
+        from agent.schema import GuidanceContext
+        pending = GuidanceStore().load(user_id, thread_id)
+        if pending and pending["status"] == "waiting":
+            current_question["pending_analysis"] = {
+                "file_id": pending["file_id"],
+                "missing_fields": GuidanceContext.model_validate(pending["context"]).missing_fields(),
+            }
     alog = get_agent_logger()
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -92,6 +105,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
 
     def run_agent():
         nonlocal ai_reply_chunks
+        route_started = time.perf_counter()
         checkpointer_ctx = SqliteSaver.from_conn_string(DB_PATH)
         checkpointer = checkpointer_ctx.__enter__()
 
@@ -100,7 +114,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             tools=tools or [],
             checkpointer=checkpointer,
             system_prompt=load_system_prompt(),
-            # 简历原文 / 评分报告等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
+            # 简历原文 / 指导报告等大段工具输出一旦进入历史，同一 thread 后续每轮对话都要重新计费；
             # 超过 token 阈值后自动清理较早的工具结果（只保留最近几条），避免上下文随轮次无限膨胀
             middleware=[
                 ContextEditingMiddleware(
@@ -111,17 +125,53 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         def _emit_state(state: str):
             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=state))
 
+        active_report = None
+
+        def _text_position():
+            # 浏览器字符串偏移使用 UTF-16 code units（emoji 占两位），不能直接用 Python len。
+            return len("".join(ai_reply_chunks).encode("utf-16-le")) // 2
+
+        def _emit_report(event):
+            nonlocal active_report
+            kind = event["type"]
+            if kind == "start":
+                reports = search_info.setdefault("guidance_reports", [])
+                active_report = {
+                    "version": 1, "id": f"report-{len(reports) + 1}",
+                    "context": event["context"], "file_id": event.get("file_id"), "overview": "", "actions": [],
+                    "interview_questions": [], "status": "generating",
+                    "start_pos": _text_position(), "end_pos": _text_position(),
+                }
+                reports.append(active_report)
+            if active_report is None:
+                return
+            if kind == "overview":
+                active_report["overview"] = event["text"]
+            elif kind in {"action", "question"}:
+                key = "actions" if kind == "action" else "interview_questions"
+                active_report[key].append(event["item"])
+            elif kind in {"complete", "incomplete"}:
+                active_report["status"] = kind
+            active_report["end_pos"] = _text_position()
+            payload = {**event, "report_id": active_report["id"],
+                       "start_pos": active_report["start_pos"], "end_pos": active_report["end_pos"]}
+            loop.call_soon_threadsafe(queue.put_nowait, "[REPORT]" + json.dumps(payload, ensure_ascii=False))
+
         def _emit_chunk(text: str):
-            # return_direct 工具内部真正流式生成时（如 report_generator 逐 token 输出），
+            # return_direct 工具内部按已校验段落流式生成时，
             # 通过这里把每段增量实时转发给前端，标记 tool_streamed 避免 ToolMessage 分支重复整段推送
             nonlocal tool_streamed
             tool_streamed = True
             ai_reply_chunks.append(text)
-            loop.call_soon_threadsafe(queue.put_nowait, text)
+            if active_report and active_report["status"] == "generating":
+                active_report["end_pos"] = _text_position()
+            loop.call_soon_threadsafe(queue.put_nowait, SSE.content(text))
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "user_id": user_id, "file_id": file_id,
-                             "emit_state": _emit_state, "emit_chunk": _emit_chunk}}
+                             "user_message": question,
+                             "emit_state": _emit_state, "emit_chunk": _emit_chunk,
+                             "emit_report": _emit_report}}
         step = 0
         alog.info(step, "user_asking", "用户提问", question)
         step += 1
@@ -157,6 +207,10 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                             name = getattr(tc, "name", "") or ""
                         if name and name != current_tool_name:
                             current_tool_name = name
+                            if name == "analyze_resume":
+                                alog.info(0, "resume_route_timing", "指导工具路由耗时", {
+                                    "elapsed_seconds": round(time.perf_counter() - route_started, 4),
+                                })
                             tool_streamed = False
                             alog.info(step, "tool_call", "调用工具", current_tool_name)
                             step += 1
@@ -169,7 +223,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         ai_reply_chunks.append(chunk.content)
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata.get('token_usage'):
                             _last_meta = chunk.response_metadata
-                        loop.call_soon_threadsafe(queue.put_nowait, chunk.content)
+                        loop.call_soon_threadsafe(queue.put_nowait, SSE.content(chunk.content))
                 # tool调用完毕
                 elif isinstance(chunk, ToolMessage):
                     tool_info = SSE.match_tool(current_tool_name)
@@ -199,7 +253,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         if _saved_tool_name in direct_tool_names and not tool_streamed:
                             content = str(chunk.content)
                             ai_reply_chunks.append(content)
-                            loop.call_soon_threadsafe(queue.put_nowait, content)
+                            loop.call_soon_threadsafe(queue.put_nowait, SSE.content(content))
                     continue
         except Exception as e:
             error_msg = str(e)
@@ -207,12 +261,20 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             step += 1
             loop.call_soon_threadsafe(queue.put_nowait, f"{SSE.ERROR} {e}")
         finally:
+            if active_report and active_report["status"] == "generating":
+                _emit_report({"type": "incomplete"})
             try:
                 checkpointer_ctx.__exit__(None, None, None)
                 _full = "".join(ai_reply_chunks)
                 if _full:
                     save_ai_message(thread_id, _full, search_info, user_id)
-                    generate_and_save_title(thread_id, question, _full, model)
+                    title_started = time.perf_counter()
+                    try:
+                        generate_and_save_title(thread_id, question, _full, model)
+                    finally:
+                        alog.info(0, "title_timing", "标题阶段耗时（不计入指导）", {
+                            "elapsed_seconds": round(time.perf_counter() - title_started, 4),
+                        })
                     print(f'  [Token] prompt={_last_meta.get("input_tokens", "?")} '
                           f' completion={_last_meta.get("output_tokens", "?")} '
                           f' total={_last_meta.get("total_tokens", "?")} '

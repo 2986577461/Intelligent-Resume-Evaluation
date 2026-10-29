@@ -5,7 +5,6 @@ from datetime import datetime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 
-from common.logger import get_agent_logger
 from conversation.service import get_app_db
 
 
@@ -96,67 +95,44 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 
 
 @tool(return_direct=True)
-def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None,
-                   position: str | None = None) -> str:
-    """对简历进行多维度专业评分（技能、项目深度、经验、学历），返回评分报告。
-    参数： index：文件的位置索引，从list_resumes工具中获取。 file_id:文件id，从上下文获取。
-    position：仅在"上一次调用本工具提示简历缺少目标岗位、且你已经询问过用户"之后才传入用户回答的岗位名称,
-    正常首次调用不要传这个参数。
-"""
-    import os
+def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None) -> str:
+    """解析简历，给出最多3条有依据的优先优化建议和最多5个具体面试追问，不评分。
+    用户请求完整分析、评价、优化简历或补充上一轮待确认投递信息时使用。
+    已有报告的解释、局部讨论或普通面试知识问答，不默认调用本工具重跑。
+    单纯问“校招是什么意思”等概念、取消或拒绝继续，不是补充投递信息。
+    有 file_id 时直接使用；无附件且正在补充投递信息时可以省略 file_id 和 index，
+    系统会恢复本会话暂存的文件。其他无附件场景先 list_resumes 获取索引。
+    目标岗位、实习/校招/社招和可选 JD 从本轮原始消息识别，不要在解析前强制询问。
+    """
+    from agent.scoring import create_scoring_model, evaluate_resume
+    from agent.telemetry import EvaluationTrace
+    from state.manager import get_cache_manager
+
+    from agent.guidance_state import GuidanceStore
+    store = GuidanceStore()
+    user_id, thread_id = _get_user_thread(config)
     runtime = config.get("configurable", {})
-    user_id, thread_id = runtime.get("user_id", ""), runtime.get("thread_id", "")
-    data = _get_content_by_file_id_or_index(thread_id, file_id, index, user_id)
-    if not data:
-        return "未找到该序号对应的简历文件。"
-
+    trace = EvaluationTrace(runtime.get("record_metric"))
     try:
-        from state.manager import get_cache_manager
-
-        cache = get_cache_manager()
-
-        from langchain.chat_models import init_chat_model
-        from agent.graph import build_scoring_graph
-        from agent.nodes import resume_analyst_node
-
-        model = init_chat_model(model=os.getenv("MODEL_NAME", "deepseek-v4-flash"), max_tokens=4096)
-        emit = runtime.get("emit_state")
-        emit_chunk = runtime.get("emit_chunk")
-
-        pending = cache.get_pending_evaluation(data["file_id"])
-        if pending:
-            extraction = pending
-        else:
-            extraction = resume_analyst_node({"resume_text": data["text"]}, model, emit)
-
-        extraction["page_count"] = data["page_count"]
-
-        # 如果走的重试路线就将职位覆盖到简历中
-        if position:
-            extraction["position"] = position
-
-        # 如果提取简历后发现缺少岗位
-        if not extraction.get("position"):
-            # 且缓存中也没有该简历
-            if not pending:
-                # 将缺少岗位的简历暂存入redis
-                cache.set_pending_evaluation(data["file_id"], extraction)
-            return "简历上没有岗位信息，你想投递什么岗位？"
-
-        # 开始评估简历
-        # 删除缓存
-        if pending:
-            cache.delete_pending_evaluation(data["file_id"])
-
-        if emit:
-            emit("简历信息评估中")
-        graph = build_scoring_graph(model, emit, emit_chunk)
-
-        for s in graph.stream(extraction):
-            node = s.get("report")
-            if isinstance(node, dict) and node.get("report"):
-                return node["report"]
-        return "评分分析失败，请重试。"
-    except Exception as e:
-        get_agent_logger().error(0, "analyze_resume_failed", "简历评分异常", str(e)[:300])
-        return "简历分析失败，请稍后重试。"
+        # 本轮新附件优先；否则恢复当前文件，不依赖模型记住文件 ID。
+        file_id = runtime.get("file_id") or file_id
+        if not file_id and index is None:
+            pending = store.load(user_id, thread_id)
+            file_id = pending["file_id"] if pending else None
+        data = _get_content_by_file_id_or_index(thread_id, file_id, index, user_id)
+        if not data:
+            return "未找到对应的简历文件，请上传简历或指定本会话中的文件。"
+        model = create_scoring_model()
+        try:
+            cache = get_cache_manager()
+        except Exception as error:
+            trace.record("cache_error", operation="initialize", error_type=type(error).__name__)
+            cache = None
+        return evaluate_resume(data, user_id, thread_id, model, cache,
+                               user_message=runtime.get("user_message", ""), store=store,
+                               emit_state=runtime.get("emit_state"), emit_chunk=runtime.get("emit_chunk"), trace=trace,
+                               emit_report=runtime.get("emit_report"))
+    except Exception as error:
+        trace.record("failure", error_type=type(error).__name__)
+        trace.finish("failed")
+        return "简历指导生成失败，请稍后重试。"

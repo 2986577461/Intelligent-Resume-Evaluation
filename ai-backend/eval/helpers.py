@@ -1,4 +1,4 @@
-"""评测辅助函数：加载 golden set、跑评分图、抽取文本做 grounding 校验"""
+"""加载固定样本、运行指导图和收集可审计文本。"""
 
 import json
 from pathlib import Path
@@ -8,29 +8,23 @@ from eval.schemas import GoldenResume, ReportSchema
 GOLDEN_DIR = Path(__file__).parent / "golden_resumes"
 
 
-def load_golden_resumes() -> list[tuple[str, GoldenResume]]:
-    resumes = []
-    for path in sorted(GOLDEN_DIR.glob("*.json")):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        resumes.append((path.stem, GoldenResume(**data)))
-    return resumes
+def load_golden_resumes():
+    return [(path.stem, GoldenResume(**json.loads(path.read_text(encoding="utf-8"))))
+            for path in sorted(GOLDEN_DIR.glob("*.json"))]
 
 
-def run_eval_pipeline(graph, resume_text: str) -> ReportSchema:
-    """跑一次完整评分图（resume_analyst -> 四维度 analyst -> report_generator），返回解析后的 report"""
-    report_text = None
-    for step in graph.stream({"resume_text": resume_text}):
-        node = step.get("report")
-        if node:
-            report_text = node.get("report") if isinstance(node, dict) else node
-    if not report_text:
-        raise AssertionError("评分流程未产出 report 字段")
-    return ReportSchema.model_validate_json(report_text)
+def run_eval_pipeline(graph, resume_text, position, application_type):
+    result = graph.invoke({"resume_text": resume_text, "page_count": 1,
+                           "user_message": f"请以{application_type}为本次投递场景，目标岗位是{position}，指导这份简历。"})
+    if not result.get("report_data"):
+        raise AssertionError("指导流程未产出 report_data")
+    return ReportSchema.model_validate(result["report_data"])
 
 
-def flatten_report_text(report: ReportSchema) -> str:
-    """拼接 report 里所有自然语言字段，用于实体命中率检查"""
-    parts = list(report.strengths) + list(report.risks) + list(report.interview_questions) + [report.summary]
-    for dim in report.dimensions.values():
-        parts.extend(dim.detail)
+def flatten_report_text(report):
+    parts = [report.overview]
+    for item in report.actions:
+        parts.extend([item.subject, item.observation, item.impact, item.action])
+    for item in report.interview_questions:
+        parts.extend([item.question, item.purpose, item.preparation])
     return "\n".join(parts)

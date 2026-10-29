@@ -1,32 +1,26 @@
-"""真实调用 LLM 评测：验证 report 输出符合 schema、权重上限、总分求和。
-产生 token 费用，默认不跑，用 `pytest -m llm` 显式执行。
-"""
+"""真实模型的结构与证据回查；需要显式 -m llm，会产生费用。"""
 
 import pytest
 
-from eval.schemas import SCORE_TIER_BANDS
+from agent.nodes import _contains
 
 pytestmark = pytest.mark.llm
 
 
-def test_report_matches_schema(report):
-    assert report.dimension_keys_valid(), f"维度 key 不完整: {list(report.dimensions.keys())}"
+def test_report_has_bounded_actions_and_linked_questions(report):
+    assert len(report.actions) <= 3 and len(report.interview_questions) <= 5
+    ids = {item.id for item in report.actions}
+    assert all(item.action_id is None or item.action_id in ids for item in report.interview_questions)
+    assert not report.context.missing_fields()
 
 
-def test_dimension_scores_within_weight(report):
-    errors = report.dimension_scores_within_weight()
-    assert not errors, "; ".join(errors)
+def test_evidence_is_from_resume(report, golden_resume):
+    for item in [*report.actions, *report.interview_questions]:
+        for quote in item.evidence:
+            assert _contains(golden_resume.resume_text, quote)
 
 
-def test_overall_score_matches_dimension_sum(report):
-    assert report.overall_score_matches_sum(), (
-        f"overall_score={report.overall_score} 与维度分数之和不符: "
-        f"{[(k, d.score) for k, d in report.dimensions.items()]}"
-    )
-
-
-def test_overall_score_within_tier_band(report, golden_resume):
-    low, high = SCORE_TIER_BANDS[golden_resume.score_tier]
-    assert low <= report.overall_score <= high, (
-        f"score_tier={golden_resume.score_tier} 期望区间 [{low},{high}]，实际 {report.overall_score}"
-    )
+def test_report_contains_no_score_protocol(report):
+    data = report.model_dump()
+    assert "overall_score" not in data and "dimensions" not in data
+    assert "match_status" not in data and "sections" not in data

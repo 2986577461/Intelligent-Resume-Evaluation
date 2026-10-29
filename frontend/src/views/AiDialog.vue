@@ -70,7 +70,7 @@
             <div
               v-for="(msg, i) in messages"
               :key="i"
-              :class="['msg-wrap', msg.role]"
+              :class="['msg-wrap', msg.role, { 'has-report': msg.reports?.length }]"
             >
               <div class="msg-avatar">
                 <img
@@ -114,13 +114,14 @@
                     msg.fileInfo.fileName
                   }}</span>
                 </div>
+                <DiscussionReference v-if="msg.discussion" :context="msg.discussion" />
                 <div class="user-bubble">{{ msg.text }}</div>
               </div>
               <template v-if="msg.role === 'ai'">
                 <div class="msg-body">
                   <Transition name="fade" mode="out-in">
                     <div
-                      v-if="msg.toolStatus"
+                      v-if="msg.toolStatus && !msg.reports?.length"
                       class="search-link"
                       style="cursor: default"
                       :key="msg.toolStatus"
@@ -128,7 +129,14 @@
                       {{ msg.toolStatus }}
                     </div>
                   </Transition>
+                  <template v-if="msg.reports?.length">
+                    <template v-for="(segment, si) in reportSegments(msg.text, msg.reports)" :key="segment.report?.id || `text-${si}`">
+                      <GuidanceReport v-if="segment.report" :report="segment.report" :busy="loading" @discuss="discussSuggestion(segment.report, $event)" />
+                      <div v-else class="ai-text" v-html="renderMarkdown(segment.text)"></div>
+                    </template>
+                  </template>
                   <div
+                    v-else
                     class="ai-text"
                     v-html="renderMarkdown(searchBefore(msg))"
                   ></div>
@@ -175,7 +183,7 @@
                     </div>
                   </div>
                   <div
-                    v-if="searchAfter(msg)"
+                    v-if="!msg.reports?.length && searchAfter(msg)"
                     class="ai-text"
                     v-html="renderMarkdown(searchAfter(msg))"
                   ></div>
@@ -205,6 +213,10 @@
           </div>
 
           <div class="input-wrap">
+            <div v-if="discussion" class="discussion-context">
+              <span>正在讨论 {{ discussion.item.id }} · {{ discussion.item.subject }}</span>
+              <button type="button" @click="discussion = null" aria-label="取消关联建议">×</button>
+            </div>
             <div v-if="pendingFile.name" class="file-tag-bar">
               <div
                 class="file-chip"
@@ -303,7 +315,7 @@
                   @keydown.enter.exact.prevent="handleEnter"
                   @keydown.alt.enter.prevent="insertNewline"
                   @paste="onPaste"
-                  placeholder="Write a message..."
+                  placeholder="上传简历获取修改建议，或追问如何准备面试…"
                   :disabled="loading"
                   rows="1"
                   @input="autoResize"
@@ -332,7 +344,7 @@
             </div>
           </div>
           <div class="chat-footer">
-            Claude is AI and can make mistakes. Please double-check responses.
+            AI 建议可能有误，请结合原文与实际经历核对。
           </div>
         </main>
       </template>
@@ -342,8 +354,11 @@
     <button
       class="btn-scroll-bottom"
       v-if="showScrollBtn"
+      title="查看最新内容"
+      aria-label="滚动到最新内容"
       @click="scrollBottom()"
     >
+      <span v-if="hasNewContent">有新内容</span>
       <svg
         viewBox="0 0 24 24"
         fill="none"
@@ -380,6 +395,9 @@
 </template>
 
 <script setup>
+import GuidanceReport from '@/components/GuidanceReport.vue';
+import DiscussionReference from '@/components/DiscussionReference.vue';
+import { applyReportEvent, reportSegments, finishReports, discussionContext, userMessageDisplay } from '@/components/guidanceReport.js';
 import { ref, reactive, nextTick, onMounted, onUnmounted } from "vue";
 import { useUserStore } from "@/stores/user";
 import { useVisibleStore } from "@/stores/visible";
@@ -407,6 +425,8 @@ const conversations = ref([]);
 const pageLoading = ref(true);
 const sidebarOpen = ref(false);
 const showScrollBtn = ref(false);
+const hasNewContent = ref(false);
+const discussion = ref(null);
 const toastVisible = ref(false);
 const toastMsg = ref("");
 const msgBox = ref(null);
@@ -422,39 +442,23 @@ let es = null;
 let _uploadPromise = null;
 let _uploadToken = 0;
 
-let _statusQueue = [];
-let _statusTimer = null;
-function _runStatusQueue(msg) {
-  if (_statusTimer) return;
-  const dequeue = () => {
-    if (_statusQueue.length > 0) {
-      msg.toolStatus = _statusQueue.shift() || "";
-      _statusTimer = setTimeout(dequeue, 500);
-    } else {
-      _statusTimer = null;
-    }
-  };
-  dequeue();
-}
 function _setStatus(text, msg) {
-  // “✓ ... completed”这类完成徽章需要在正文开始输出后仍然保留，
-  // 和刷新页面后 _buildMsg 从 search_info.tools 里恢复出的永久徽章行为保持一致
+  // 状态如实反映最新服务端事件，不人为按 500ms 排队播放旧阶段。
+  msg.toolStatus = text || "";
   msg.toolDone = !!(text && text.startsWith("✓"));
-  _statusQueue.push(text);
-  _runStatusQueue(msg);
 }
-// 清空状态也走队列，保证排在前面的“完成”提示至少展示一轮再消失；
-// 但如果最后一条状态已经是完成徽章，正文 chunk 到达时不再清空它
 function _clearStatus(msg) {
-  if (msg.toolDone) return;
-  _statusQueue.push(null);
-  _runStatusQueue(msg);
+  if (!msg.toolDone) msg.toolStatus = "";
 }
 
 function _buildMsg(role, content, searchInfo, file) {
+  let metadata = null;
+  try { metadata = typeof searchInfo === 'string' ? JSON.parse(searchInfo) : searchInfo; } catch {}
+  const display = role === 'user' ? userMessageDisplay(content || '', metadata) : { text: content || '', discussion: null };
   const m = reactive({
     role,
-    text: content || "",
+    text: display.text,
+    discussion: display.discussion,
     streaming: false,
     searching: false,
     webResults: null,
@@ -463,14 +467,18 @@ function _buildMsg(role, content, searchInfo, file) {
     fileInfo: null,
     toolStatus: "",
     toolDone: false,
+    reports: [],
   });
   if (file) {
     m.fileInfo = { fileId: file.id, fileName: file.filename };
   }
   if (searchInfo) {
     try {
-      const si =
-        typeof searchInfo === "string" ? JSON.parse(searchInfo) : searchInfo;
+      const si = metadata;
+      if (Array.isArray(si.guidance_reports)) {
+        m.reports = si.guidance_reports.filter(r => r.version === 1);
+        finishReports(m.reports);
+      }
       if (si.web) {
         m.webResults = si.web;
       }
@@ -508,11 +516,52 @@ function renderMarkdown(t) {
 }
 function scrollBottom() {
   if (msgBox.value) msgBox.value.scrollTop = msgBox.value.scrollHeight;
+  showScrollBtn.value = false;
+  hasNewContent.value = false;
 }
 function onScroll() {
   const b = msgBox.value;
-  if (b)
-    showScrollBtn.value = b.scrollTop + b.clientHeight < b.scrollHeight - 200;
+  if (b) {
+    showScrollBtn.value = b.scrollTop + b.clientHeight < b.scrollHeight - 100;
+    if (!showScrollBtn.value) hasNewContent.value = false;
+  }
+}
+function followContent() {
+  // 先依据更新前的位置决定是否跟随，用户向上阅读时不抢滚动位置。
+  const follow = !showScrollBtn.value;
+  if (!follow) hasNewContent.value = true;
+  nextTick(() => { if (follow && !showScrollBtn.value) scrollBottom(); });
+}
+
+let contentFrame = null;
+const pendingContent = new Map();
+function queueContent(msg, update) {
+  if (!pendingContent.has(msg)) pendingContent.set(msg, []);
+  pendingContent.get(msg).push(update);
+  if (contentFrame == null) contentFrame = requestAnimationFrame(flushContent);
+}
+function flushContent() {
+  if (contentFrame != null) cancelAnimationFrame(contentFrame);
+  contentFrame = null;
+  if (!pendingContent.size) return;
+  for (const [msg, updates] of pendingContent) {
+    for (const update of updates) {
+      if (update.event) {
+        applyReportEvent(msg.reports, update.event);
+      } else {
+        msg.text += update.text;
+        for (const report of msg.reports || []) {
+          if (report.status === 'generating') report.end_pos = msg.text.length;
+        }
+      }
+    }
+  }
+  pendingContent.clear();
+  followContent();
+}
+function discussSuggestion(report, item) {
+  discussion.value = { position: report.context.position.value, fileId: report.file_id, item };
+  nextTick(() => inputBox.value?.focus());
 }
 function autoResize() {
   const e = inputBox.value;
@@ -651,6 +700,7 @@ function closePreview() {
 
 async function switchConversation(threadId) {
   if (loading.value) stopStream();
+  discussion.value = null;
   clearFile();
   currentThreadId.value = threadId;
   messages.value = [];
@@ -669,6 +719,7 @@ async function switchConversation(threadId) {
 }
 function newConversation() {
   if (loading.value) stopStream();
+  discussion.value = null;
   clearFile();
   currentThreadId.value = "";
   messages.value = [];
@@ -690,15 +741,24 @@ async function delConversation(threadId) {
     ElMessage.success("已删除");
   } catch {}
   if (currentThreadId.value === threadId) {
+    discussion.value = null;
     currentThreadId.value = "";
     messages.value = [];
   }
   await loadConversations();
 }
 function stopStream() {
+  flushContent();
   if (es) {
     es.close();
     es = null;
+  }
+  for (const msg of messages.value) {
+    if (msg.streaming) {
+      msg.streaming = false;
+      finishReports(msg.reports || []);
+      msg.toolStatus = '连接已停止 · 不代表后台任务已取消';
+    }
   }
   loading.value = false;
 }
@@ -725,6 +785,8 @@ async function send() {
   }
   const text = question.value.trim();
   if (!text || loading.value || pendingFile.value.uploading) return;
+  const reference = discussionContext(discussion.value);
+  discussion.value = null;
 
   if (!currentThreadId.value) {
     currentThreadId.value = "session-" + crypto.randomUUID();
@@ -735,18 +797,12 @@ async function send() {
     role: "user",
     text,
     fileInfo,
+    discussion: reference,
   });
   question.value = "";
   autoResize();
   loading.value = true;
   nextTick(() => scrollBottom());
-
-  // 每次新消息重置状态队列，避免上一轮残留干扰
-  if (_statusTimer) {
-    clearTimeout(_statusTimer);
-    _statusTimer = null;
-  }
-  _statusQueue = [];
 
   const aiIdx = messages.value.length;
   messages.value.push(
@@ -760,10 +816,12 @@ async function send() {
       searchSplitPos: null,
       toolStatus: "",
       toolDone: false,
+      reports: [],
     }),
   );
 
   let url = `${CHAT_STREAM_URL}?question=${encodeURIComponent(text)}&thread_id=${currentThreadId.value}`;
+  if (reference) url += `&discussion_context=${encodeURIComponent(JSON.stringify(reference))}`;
   if (hasPending) {
     if (_uploadPromise) await _uploadPromise;
     const fileId = pendingFile.value.fileId;
@@ -774,11 +832,18 @@ async function send() {
       if (fileInfo) fileInfo.fileId = fileId;
     }
   }
+  const activeMessage = messages.value[aiIdx];
   const evtSource = new EventSource(url, { withCredentials: true });
   es = evtSource;
   evtSource.onmessage = async (e) => {
-    const msg = messages.value[aiIdx];
+    if (es !== evtSource) return;
+    const msg = activeMessage;
     if (e.data === "[DONE]") {
+      flushContent();
+      finishReports(msg.reports);
+      if (msg.reports.some(r => r.status === 'incomplete')) {
+        msg.toolStatus = '报告未完成 · 已保留生成部分';
+      }
       evtSource.close();
       es = null;
       msg.streaming = false;
@@ -787,12 +852,22 @@ async function send() {
       await loadConversations();
       nextTick(() => inputBox.value?.focus());
     } else if (e.data.startsWith("[ERROR]")) {
+      flushContent();
+      finishReports(msg.reports);
       evtSource.close();
       es = null;
-      msg.text = "出错：" + e.data.replace("[ERROR] ", "");
+      msg.text += "\n\n> 输出中断：" + e.data.replace("[ERROR] ", "");
       msg.streaming = false;
       loading.value = false;
+    } else if (e.data.startsWith('[REPORT]')) {
+      try {
+        queueContent(msg, { event: JSON.parse(e.data.slice(8)) });
+      } catch {
+        flushContent();
+        finishReports(msg.reports);
+      }
     } else if (e.data.startsWith("[STATE]")) {
+      flushContent();
       // 处理后端流式状态信号
       try {
         const state = JSON.parse(e.data.replace("[STATE]", ""));
@@ -800,13 +875,14 @@ async function send() {
           _setStatus("Searching the web...", msg);
           if (msg.searchSplitPos == null) msg.searchSplitPos = msg.text.length;
         } else if (state.state === "Analyzing") {
-          _setStatus("Analyzing resume...", msg);
-        } else if (state.state === "提取简历信息中") {
-          _setStatus("提取简历信息中...", msg);
-        } else if (state.state === "简历信息评估中") {
-          _setStatus("简历信息评估中...", msg);
-        } else if (state.state === "评估报告生成中") {
-          _setStatus("评估报告生成中...", msg);
+          _setStatus("正在生成简历指导...", msg);
+        } else if (
+          ["提取简历信息中", "识别投递目标中", "已复用简历提取结果",
+            "优化建议与面试追问生成中"].includes(state.state)
+        ) {
+          _setStatus(state.state + "...", msg);
+        } else if (state.state === "指导报告生成中") {
+          _setStatus("指导报告生成中...", msg);
         } else if (state.state === "Parsing") {
           _setStatus("Parsing resume...", msg);
         } else if (state.state === "search_done") {
@@ -815,7 +891,7 @@ async function send() {
             msg.webResults = state.results;
           }
         } else if (state.state === "analysis_done") {
-          _setStatus("✓ Analysis completed", msg);
+          _setStatus("✓ 分析处理结束", msg);
         } else if (state.state === "parse_done") {
           _setStatus("✓ Parse completed", msg);
         }
@@ -823,16 +899,22 @@ async function send() {
     } else {
       _clearStatus(msg);
       msg.searching = false;
-      const t = e.data.replace(/\\n/g, "\n");
-      msg.text += t;
-      nextTick(() => scrollBottom());
+      // [TEXT] 的 JSON 字符串无损保留换行、反斜杠及模型 token 的任意边界。
+      const t = e.data.startsWith("[TEXT]")
+        ? JSON.parse(e.data.slice(6))
+        : e.data.replace(/\\n/g, "\n"); // 兼容滚动升级时的旧服务端
+      queueContent(msg, { text: t });
     }
   };
   evtSource.onerror = async () => {
+    if (es !== evtSource) return;
     evtSource.close();
     es = null;
-    const msg = messages.value[aiIdx];
+    flushContent();
+    const msg = activeMessage;
     if (msg) {
+      finishReports(msg.reports);
+      msg.toolStatus = '连接中断 · 已生成的内容已保留';
       msg.streaming = false;
     }
     loading.value = false;
@@ -857,9 +939,10 @@ onMounted(async () => {
   pageLoading.value = false;
   if (conversations.value.length > 0)
     switchConversation(conversations.value[0].thread_id);
-  msgBox.value?.addEventListener("scroll", onScroll);
 });
 onUnmounted(() => {
+  if (contentFrame != null) cancelAnimationFrame(contentFrame);
+  pendingContent.clear();
   if (es) {
     es.close();
     es = null;
@@ -1072,7 +1155,7 @@ onUnmounted(() => {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 24px 20px 40px;
-  width: 85%;
+  width: min(94%, 1120px);
   margin: 0 auto;
   scrollbar-width: none;
   -ms-overflow-style: none;
@@ -1109,6 +1192,8 @@ onUnmounted(() => {
 .msg-user-wrap {
   display: flex;
   flex-direction: column;
+  min-width: 0;
+  max-width: 100%;
   align-items: flex-end;
 }
 .user-bubble {
@@ -1498,15 +1583,33 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+/* 单条建议讨论：上下文可见且可取消，不静默绑定后续问题。 */
+.discussion-context {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: #eff8fa;
+  color: #306875;
+  font-size: 13px;
+}
+.discussion-context span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.discussion-context button { border: 0; background: none; color: inherit; cursor: pointer; font-size: 20px; }
+
 /* Scroll button */
 .btn-scroll-bottom {
   position: fixed;
   bottom: 160px;
   left: 50%;
   transform: translateX(-50%);
-  width: 36px;
+  min-width: 36px;
+  padding: 0 10px;
+  gap: 4px;
+  font-size: 12px;
   height: 36px;
-  border-radius: 50%;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.9);
   border: 1px solid var(--border);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
@@ -1616,6 +1719,9 @@ onUnmounted(() => {
   }
   .sidebar.open {
     transform: translateX(0);
+  }
+  .msg-wrap.has-report .msg-avatar {
+    display: none;
   }
   .messages {
     padding: 16px;

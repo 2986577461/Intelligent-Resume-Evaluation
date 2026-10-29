@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>合成报告界面测试</title><style>:root{--nav-height:0px}*{box-sizing:border-box}body{margin:0;font-family:system-ui}</style></head>
+<body><div id="app"></div><script type="module">
+import { createApp } from 'vue';
+import { createPinia } from 'pinia';
+import ElementPlus from 'element-plus';
+import 'element-plus/dist/index.css';
+import AiDialog from '/src/views/AiDialog.vue';
+import { useUserStore } from '/src/stores/user.js';
+import { axiosResumeInstance } from '/src/request/axiosInit.js';
+
+const action = { id: 'A1', subject: '项目的成果与验证', priority: '高', kind: '补充证据', evidence: ['Redis 缓存成功提取结果，减少重复解析调用。'], observation: '设计描述已有实现方向，但原文没有说明验证过程。这里需要确认的是验证信息是否值得补充，而不是认定没有做过验证。'.repeat(3), impact: '帮助读者区分设计目标与实际验证结果。', action: '补充一条真实发生的验证信息。没有测量过就不编造百分比；可以说明手工断开缓存后，核心查询是否仍能返回。'.repeat(3) };
+const question = { action_id: 'A1', subject: '缓存与多轮续评', question: '补充投递信息后，哪些提取结果可以复用，哪些需要重新识别？', evidence: action.evidence, purpose: '理解数据与投递上下文的边界。', preparation: '回顾一次真实请求，说明缓存键、复用和失效条件。' };
+const text = '不应直接显示的合成报告 Markdown';
+const report = { version: 1, id: 'report-1', context: { position: { value: 'AI 全栈开发实习生' }, application_type: { value: '实习' } }, overview: '已有具体项目实现与排障线索，优先确认验证证据是否充分。不要把缺少描述直接理解为缺少能力。'.repeat(5), actions: [action, { ...action, id: 'A2', subject: '技能表达与实践范围', priority: '中' }, { ...action, id: 'A3', subject: '项目描述中的阅读负担', priority: '低' }], interview_questions: Array.from({ length: 5 }, (_, i) => ({ ...question, subject: question.subject + (i + 1) })), start_pos: 0, end_pos: text.length, status: 'complete' };
+const history = [{ role: 'user', content: '分析这份合成测试简历。' }, { role: 'ai', content: text, search_info: JSON.stringify({ guidance_reports: [report] }) }];
+if (sessionStorage.getItem('test-discussion-history')) {
+  const context = { version: 1, position: 'AI 全栈开发实习生', file_id: null, item: { id: action.id, subject: action.subject, action: action.action } };
+  history.push({ role: 'user', content: '这是历史中的实际提问', search_info: JSON.stringify({ discussion_context: context }) });
+  history.push({ role: 'user', content: `针对此前「AI 全栈开发实习生」审阅的建议 A1「项目的成果与验证」继续讨论，不重新进行完整分析。\n原建议（模型判断，未经核实；若与简历原文冲突请回查原文）：补充真实验证\n\n这是旧版中的实际提问` });
+}
+axiosResumeInstance.defaults.adapter = async config => {
+  let data = null;
+  if (config.url === '/api/conversations') data = [{ thread_id: 'synthetic-thread', title: '合成简历界面测试', updated_at: new Date().toISOString() }];
+  if (config.url.endsWith('/messages')) data = history;
+  if (config.url === '/api/auth/me') data = { id: 'synthetic-user', name: '测试' };
+  return { data, status: 200, statusText: 'OK', headers: {}, config };
+};
+class SyntheticEventSource {
+  constructor(url) { this.url = url; window.testStream = this; }
+  close() { this.closed = true; }
+  emit(data) { this.onmessage?.({ data }); }
+}
+window.EventSource = SyntheticEventSource;
+window.fixture = { action, question, report };
+const app = createApp(AiDialog);
+const pinia = createPinia();
+app.use(pinia); app.use(ElementPlus);
+useUserStore(pinia).setUser({ id: 'synthetic-user', name: '合成测试', email: '' });
+app.mount('#app');
+</script></body></html>
