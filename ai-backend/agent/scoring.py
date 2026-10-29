@@ -48,7 +48,7 @@ def clarification(context):
 
 
 def evaluate_resume(data, user_id, thread_id, model, cache=None, *, user_message="",
-                    store=None, emit_state=None, emit_chunk=None, trace=None):
+                    store=None, emit_state=None, emit_chunk=None, trace=None, emit_report=None):
     trace = trace or EvaluationTrace()
 
     def output(text):
@@ -56,6 +56,10 @@ def evaluate_resume(data, user_id, thread_id, model, cache=None, *, user_message
             trace.content()
             if emit_chunk:
                 emit_chunk(text)
+
+    def presentation(event):
+        if emit_report:
+            emit_report({**event, "file_id": data["file_id"]} if event["type"] == "start" else event)
 
     try:
         snapshot = store.load(user_id, thread_id) if store else None
@@ -109,7 +113,7 @@ def evaluate_resume(data, user_id, thread_id, model, cache=None, *, user_message
 
         state = {**extraction, "page_count": data["page_count"], "resume_text": data["text"],
                  "context": context.model_dump()}
-        result = build_scoring_graph(model, emit_state, output, trace).invoke(state)
+        result = build_scoring_graph(model, emit_state, output, trace, emit_report=presentation).invoke(state)
         trace.finish("success")
         return result["report"]
     except ReportStreamInterrupted as error:

@@ -4,6 +4,7 @@
 本模块通过 FastAPI APIRouter 注册路由，在 Agent.py 中用 app.include_router() 挂载。
 """
 
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -136,7 +137,8 @@ class CreateConversationRequest(BaseModel):
 # ============================================================
 # 会话管理辅助函数（供 _stream_chat 使用）
 # ============================================================
-def ensure_conversation_and_save_user(thread_id: str, question: str, user_id: str) -> tuple[str, int]:
+def ensure_conversation_and_save_user(thread_id: str, question: str, user_id: str,
+                                      message_info: dict | None = None) -> tuple[str, int]:
     """
     确保会话记录存在 + 保存用户消息，返回 (最终的 thread_id, 用户消息 id)。
     已有会话必须归当前账号所有。
@@ -162,9 +164,10 @@ def ensure_conversation_and_save_user(thread_id: str, question: str, user_id: st
                 (now, thread_id),
             )
         cur = conn.execute(
-            "INSERT INTO messages (thread_id, role, content, created_at, user_id) "
-            "VALUES (?, 'user', ?, ?, ?)",
-            (thread_id, question, now, user_id),
+            "INSERT INTO messages (thread_id, role, content, created_at, user_id, search_info) "
+            "VALUES (?, 'user', ?, ?, ?, ?)",
+            (thread_id, question, now, user_id,
+             json.dumps(message_info, ensure_ascii=False) if message_info else None),
         )
         conn.commit()
         return thread_id, cur.lastrowid

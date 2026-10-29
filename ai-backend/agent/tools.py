@@ -130,7 +130,8 @@ def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: st
             cache = None
         return evaluate_resume(data, user_id, thread_id, model, cache,
                                user_message=runtime.get("user_message", ""), store=store,
-                               emit_state=runtime.get("emit_state"), emit_chunk=runtime.get("emit_chunk"), trace=trace)
+                               emit_state=runtime.get("emit_state"), emit_chunk=runtime.get("emit_chunk"), trace=trace,
+                               emit_report=runtime.get("emit_report"))
     except Exception as error:
         trace.record("failure", error_type=type(error).__name__)
         trace.finish("failed")

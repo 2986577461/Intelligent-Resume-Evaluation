@@ -226,11 +226,13 @@ class ReportJSONStream:
 
 
 class ReportStreamRenderer:
-    def __init__(self, context, emit_chunk, validate_evidence):
+    def __init__(self, context, emit_chunk, validate_evidence, emit_report=None):
         self.context = GuidanceContext.model_validate(context)
         if self.context.missing_fields():
             raise ValueError("投递上下文尚未确认")
         self.emit_chunk, self.validate_evidence = emit_chunk, validate_evidence
+        self.emit_report = emit_report
+        self.presentation_started = False
         self.parts, self.scalars = [], {}
         self.actions, self.questions = [], []
         self.questions_sent = 0
@@ -242,7 +244,14 @@ class ReportStreamRenderer:
     def content(self):
         return "".join(self.parts)
 
+    def event(self, kind, **data):
+        if self.emit_report:
+            self.emit_report({"type": kind, **data})
+
     def send(self, text):
+        if not self.presentation_started:
+            self.event("start", version=1, context=self.context.model_dump())
+            self.presentation_started = True
         self.parts.append(text)
         self.emit_chunk(text)
 
@@ -261,6 +270,7 @@ class ReportStreamRenderer:
                 if delta:
                     self.send(delta)
                 self.overview_rendered = rendered
+                self.event("overview", text=self.overview_raw.strip())
             return
         if index == "end":
             if key == "actions":
@@ -290,6 +300,7 @@ class ReportStreamRenderer:
                 self.send("\n\n")
             else:
                 self.send(introduction(self.context, intro))
+                self.event("overview", text=intro.overview)
             self.intro_sent = True
         if (self.actions or self.actions_closed) and not self.actions_sent:
             self.send("## 优先修改清单\n\n")
@@ -298,6 +309,7 @@ class ReportStreamRenderer:
         for item in ordered_actions(self.actions):
             if item.id not in self.sent_action_ids and (self.actions_closed or item.priority == "高"):
                 self.send(action_text(item))
+                self.event("action", item=item.model_dump())
                 self.sent_action_ids.add(item.id)
         if not self.actions_closed:
             return
@@ -312,6 +324,7 @@ class ReportStreamRenderer:
             if self.questions_sent == 0:
                 self.send("## 面试官可能继续追问\n\n")
             self.send(question_text(item))
+            self.event("question", item=item.model_dump())
             self.questions_sent += 1
 
     def finish(self, report):
@@ -321,3 +334,4 @@ class ReportStreamRenderer:
         if self.content + tail != expected:
             raise ValueError("报告流与最终协议不一致")
         self.send(tail)
+        self.event("complete")

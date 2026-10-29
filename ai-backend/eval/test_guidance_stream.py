@@ -12,7 +12,8 @@ from eval.test_scoring_pdf import configure, upload
 
 
 @pytest.mark.parametrize("incomplete", [False, True])
-def test_stream_preserves_raw_message_and_exposes_pending_state(api, monkeypatch, tmp_path, incomplete):
+@pytest.mark.parametrize("prefix", ["", "😀 路由说明\n"])
+def test_stream_preserves_raw_message_and_exposes_pending_state(api, monkeypatch, tmp_path, incomplete, prefix):
     pytest.importorskip("langchain")
     from agent import service
     from agent.tools import analyze_resume
@@ -33,6 +34,8 @@ def test_stream_preserves_raw_message_and_exposes_pending_state(api, monkeypatch
     class FakeRouter:
         def stream(self, inputs, config, stream_mode):
             captured.append((ast.literal_eval(inputs["messages"][0]["content"]), config))
+            if prefix:
+                yield AIMessageChunk(content=prefix), {}
             yield AIMessageChunk(content="", tool_call_chunks=[
                 {"name": "analyze_resume", "args": "{}", "id": "call-guidance", "index": 0},
             ]), {}
@@ -69,6 +72,24 @@ def test_stream_preserves_raw_message_and_exposes_pending_state(api, monkeypatch
                            for event in events if event.startswith("data: [TEXT]"))
         assert streamed == messages[3]["content"]
         assert sum(stage == "synthesis" for stage, _ in model.calls) == 1
+        metadata = json.loads(conn.execute(
+            "SELECT search_info FROM messages WHERE role='ai' ORDER BY id DESC LIMIT 1").fetchone()["search_info"])
+        saved_report = metadata["guidance_reports"][0]
+        assert saved_report["version"] == 1
+        assert saved_report["file_id"] == file_id
+        assert saved_report["status"] == ("incomplete" if incomplete else "complete")
+        assert saved_report["overview"] == SYNTHESIS["overview"]
+        assert saved_report["actions"] == ([] if incomplete else SYNTHESIS["actions"])
+        assert saved_report["interview_questions"] == ([] if incomplete else SYNTHESIS["interview_questions"])
+        assert saved_report["start_pos"] == len(prefix.encode("utf-16-le")) // 2
+        assert saved_report["end_pos"] == len(streamed.encode("utf-16-le")) // 2
+        presentation = [json.loads(event.removeprefix("data: [REPORT]").removesuffix("\n\n"))
+                        for event in events if event.startswith("data: [REPORT]")]
+        assert presentation[0]["type"] == "start"
+        assert presentation[-1]["type"] == saved_report["status"]
+        assert all(event["report_id"] == saved_report["id"] for event in presentation)
+        history = api.client.get("/api/conversations/pdf-thread/messages").json()
+        assert json.loads(history[-1]["search_info"])["guidance_reports"] == [saved_report]
     finally:
         conn.close()
 

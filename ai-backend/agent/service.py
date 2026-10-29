@@ -67,13 +67,16 @@ def _parse_web_results(raw: str, info: dict):
 
 async def stream_chat(question: str, thread_id: str, user_id: str = "",
                       model=None, tools: list = None,
-                      file_id: str = ""):
+                      file_id: str = "", discussion=None):
     """SSE 流式生成器。model 和 tools 由 main.py 传入。"""
     from conversation.service import (ensure_conversation_and_save_user, save_ai_message,
                                       generate_and_save_title, save_message_attachment)
-    thread_id, user_msg_id = ensure_conversation_and_save_user(thread_id, question, user_id)
+    message_info = {"discussion_context": discussion.model_dump()} if discussion else None
+    thread_id, user_msg_id = ensure_conversation_and_save_user(thread_id, question, user_id, message_info)
     # 用户上传的消息附带文件时，则绑定此消息
     current_question= {"question": question}
+    if discussion:
+        current_question["discussion_context"] = discussion.for_agent()
 
     if file_id:
         from conversation.service import get_filename
@@ -122,18 +125,53 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
         def _emit_state(state: str):
             loop.call_soon_threadsafe(queue.put_nowait, SSE.state(state=state))
 
+        active_report = None
+
+        def _text_position():
+            # 浏览器字符串偏移使用 UTF-16 code units（emoji 占两位），不能直接用 Python len。
+            return len("".join(ai_reply_chunks).encode("utf-16-le")) // 2
+
+        def _emit_report(event):
+            nonlocal active_report
+            kind = event["type"]
+            if kind == "start":
+                reports = search_info.setdefault("guidance_reports", [])
+                active_report = {
+                    "version": 1, "id": f"report-{len(reports) + 1}",
+                    "context": event["context"], "file_id": event.get("file_id"), "overview": "", "actions": [],
+                    "interview_questions": [], "status": "generating",
+                    "start_pos": _text_position(), "end_pos": _text_position(),
+                }
+                reports.append(active_report)
+            if active_report is None:
+                return
+            if kind == "overview":
+                active_report["overview"] = event["text"]
+            elif kind in {"action", "question"}:
+                key = "actions" if kind == "action" else "interview_questions"
+                active_report[key].append(event["item"])
+            elif kind in {"complete", "incomplete"}:
+                active_report["status"] = kind
+            active_report["end_pos"] = _text_position()
+            payload = {**event, "report_id": active_report["id"],
+                       "start_pos": active_report["start_pos"], "end_pos": active_report["end_pos"]}
+            loop.call_soon_threadsafe(queue.put_nowait, "[REPORT]" + json.dumps(payload, ensure_ascii=False))
+
         def _emit_chunk(text: str):
             # return_direct 工具内部按已校验段落流式生成时，
             # 通过这里把每段增量实时转发给前端，标记 tool_streamed 避免 ToolMessage 分支重复整段推送
             nonlocal tool_streamed
             tool_streamed = True
             ai_reply_chunks.append(text)
+            if active_report and active_report["status"] == "generating":
+                active_report["end_pos"] = _text_position()
             loop.call_soon_threadsafe(queue.put_nowait, SSE.content(text))
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "user_id": user_id, "file_id": file_id,
                              "user_message": question,
-                             "emit_state": _emit_state, "emit_chunk": _emit_chunk}}
+                             "emit_state": _emit_state, "emit_chunk": _emit_chunk,
+                             "emit_report": _emit_report}}
         step = 0
         alog.info(step, "user_asking", "用户提问", question)
         step += 1
@@ -223,6 +261,8 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             step += 1
             loop.call_soon_threadsafe(queue.put_nowait, f"{SSE.ERROR} {e}")
         finally:
+            if active_report and active_report["status"] == "generating":
+                _emit_report({"type": "incomplete"})
             try:
                 checkpointer_ctx.__exit__(None, None, None)
                 _full = "".join(ai_reply_chunks)

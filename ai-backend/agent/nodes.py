@@ -118,7 +118,7 @@ def _review_input(state):
     }
 
 
-def synthesis_node(state, model, trace=None, emit_chunk=None):
+def synthesis_node(state, model, trace=None, emit_chunk=None, emit_report=None):
     payload = _review_input(state)
     if emit_chunk is None:
         result = _structured_call("report_generator.md", payload, Synthesis, model, trace, "synthesis")
@@ -127,7 +127,7 @@ def synthesis_node(state, model, trace=None, emit_chunk=None):
 
     parser = ReportJSONStream()
     renderer = ReportStreamRenderer(state["context"], emit_chunk,
-                                    lambda items: _validate_evidence(items, state["resume_text"]))
+                                    lambda items: _validate_evidence(items, state["resume_text"]), emit_report)
     prompt = _load_prompt("report_generator.md") + "\n输出 JSON Schema：\n" + json.dumps(
         Synthesis.model_json_schema(), ensure_ascii=False)
     response = None
@@ -147,6 +147,7 @@ def synthesis_node(state, model, trace=None, emit_chunk=None):
         if renderer.parts:
             # 已展示的正文不可撤回，禁止图节点自动重试而重复输出。
             renderer.send(INTERRUPTED)
+            renderer.event("incomplete")
             raise ReportStreamInterrupted(renderer.content) from error
         raise
     finally:

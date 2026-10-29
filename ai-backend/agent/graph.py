@@ -38,7 +38,7 @@ def _retryable(error):
 _LLM_RETRY_POLICY = RetryPolicy(max_attempts=2, retry_on=_retryable)
 
 
-def _build(model, emit_state, emit_chunk, trace, include_extraction, include_context):
+def _build(model, emit_state, emit_chunk, trace, include_extraction, include_context, emit_report=None):
     builder = StateGraph(EvalState)
 
     def wrap(name, fn):
@@ -49,7 +49,7 @@ def _build(model, emit_state, emit_chunk, trace, include_extraction, include_con
     def synthesize(state):
         if emit_state:
             emit_state("优化建议与面试追问生成中")
-        return synthesis_node(state, model, trace, emit_chunk=emit_chunk)
+        return synthesis_node(state, model, trace, emit_chunk=emit_chunk, emit_report=emit_report)
 
     builder.add_node("synthesis", wrap("synthesis", synthesize), retry_policy=_LLM_RETRY_POLICY)
     builder.add_node("report", wrap("report", lambda s: report_generator_node(s, emit_chunk=emit_chunk)))
@@ -72,13 +72,15 @@ def _build(model, emit_state, emit_chunk, trace, include_extraction, include_con
     return builder.compile()
 
 
-def build_eval_graph(model, emit_state=None, emit_chunk=None, trace=None):
-    return _build(model, emit_state, emit_chunk, trace, include_extraction=True, include_context=True)
+def build_eval_graph(model, emit_state=None, emit_chunk=None, trace=None, emit_report=None):
+    return _build(model, emit_state, emit_chunk, trace, include_extraction=True, include_context=True,
+                  emit_report=emit_report)
 
 
-def build_scoring_graph(model, emit_state=None, emit_chunk=None, trace=None):
+def build_scoring_graph(model, emit_state=None, emit_chunk=None, trace=None, emit_report=None):
     """保留既有 Python 入口名。输入须有完整 context，内部只调用一次综合分析。"""
-    return _build(model, emit_state, emit_chunk, trace, include_extraction=False, include_context=False)
+    return _build(model, emit_state, emit_chunk, trace, include_extraction=False, include_context=False,
+                  emit_report=emit_report)
 
 
 def build_extraction_graph(model, emit_state=None, trace=None):
