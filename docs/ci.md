@@ -14,7 +14,7 @@
 
 后端通过 `pytest-socket --disable-socket --allow-unix-socket` 禁止 TCP/IP 网络连接（仅允许测试客户端事件循环使用本地 Unix socket）。离线测试收集阶段不读取 `.env`、不初始化真实模型，并关闭 LangSmith tracing；不需要模型密钥、数据库服务或线上环境。
 
-Python CI 依赖单独锁定，包含离线评测及账号/文件 API 测试所需的直接和传递依赖，不安装运行完整服务所需的向量库、嵌入模型或真实模型 SDK。**这项检查不能替代完整服务启动验证。** 生产镜像另用 `requirements-runtime.txt` 锁定依赖，由 Docker 构建执行 `pip check`，由发布冒烟验证完整运行环境。 前端目前检查构建，不包含单元测试或浏览器端测试。
+Python CI 依赖单独锁定，包含离线评测及账号/文件 API 测试所需的直接和传递依赖。聊天服务测试直接导入真实服务，因此 CI 也安装与生产声明版本一致的 `langchain` 和 `langgraph-checkpoint-sqlite`，用于假模型路由、SSE 与临时 SQLite 持久化回归；这些测试不因缺包而跳过，也不调用真实模型。仍不安装向量库、嵌入模型或真实模型 SDK。**这项检查不能替代完整服务启动验证。** 生产镜像另用 `requirements-runtime.txt` 锁定依赖，由 Docker 构建执行 `pip check`，由发布冒烟验证完整运行环境。 前端目前检查构建，不包含单元测试或浏览器端测试。
 
 部署辅助脚本的离线测试会模拟 SSH，检查参数校验、固定主机公钥要求和临时凭证清理，不使用 Secrets，也不连接服务器。生产发布另见 [docs/cd.md](cd.md)。
 

@@ -1,7 +1,9 @@
 # Only dependencies used by offline evaluation and API tests, not the full runtime.
 # Regenerate requirements-ci.txt as documented in docs/ci.md.
+langchain==1.4.5
 langchain-core>=0.3.0,<2
 langgraph>=0.2.0,<2
+langgraph-checkpoint-sqlite==3.1.2
 pydantic>=2.0.0,<3
 pytest>=8.0.0,<10
 pytest-socket>=0.7.0,<1

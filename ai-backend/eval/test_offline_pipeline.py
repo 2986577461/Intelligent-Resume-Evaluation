@@ -433,7 +433,6 @@ def test_authentication_error_does_not_retry():
 
 
 def test_model_uses_json_mode_and_explicit_no_thinking(monkeypatch):
-    pytest.importorskip("langchain")
     from agent.scoring import create_scoring_model
     captured = {}
 

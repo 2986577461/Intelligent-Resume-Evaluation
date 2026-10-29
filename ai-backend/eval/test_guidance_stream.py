@@ -14,7 +14,6 @@ from eval.test_scoring_pdf import configure, upload
 @pytest.mark.parametrize("incomplete", [False, True])
 @pytest.mark.parametrize("prefix", ["", "😀 路由说明\n"])
 def test_stream_preserves_raw_message_and_exposes_pending_state(api, monkeypatch, tmp_path, incomplete, prefix):
-    pytest.importorskip("langchain")
     from agent import service
     from agent.tools import analyze_resume
     from langchain_core.messages import AIMessageChunk, ToolMessage
@@ -101,7 +100,6 @@ def test_stream_preserves_raw_message_and_exposes_pending_state(api, monkeypatch
 ])
 def test_real_agent_graph_does_not_force_analysis_for_plain_answer(api, monkeypatch, tmp_path, status, question):
     """真实 Agent 图＋假模型固定选择普通回答；只证明无强制重跑，不证明真实意图选择。"""
-    pytest.importorskip("langchain")
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
     from agent import service
     from agent.guidance_state import GuidanceStore

@@ -4,6 +4,8 @@
 #
 #    pip-compile --output-file=requirements-ci.txt --strip-extras requirements-ci.in
 #
+aiosqlite==0.22.1
+    # via langgraph-checkpoint-sqlite
 annotated-doc==0.0.5
     # via fastapi
 annotated-types==0.8.0
@@ -57,9 +59,12 @@ jsonpatch==1.35
     # via langchain-core
 jsonpointer==3.2.1
     # via jsonpatch
+langchain==1.4.5
+    # via -r requirements-ci.in
 langchain-core==1.6.12
     # via
     #   -r requirements-ci.in
+    #   langchain
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
@@ -69,11 +74,16 @@ langchain-protocol==0.0.19
     #   langchain-core
     #   langgraph-sdk
 langgraph==1.2.16
-    # via -r requirements-ci.in
+    # via
+    #   -r requirements-ci.in
+    #   langchain
 langgraph-checkpoint==4.3.0
     # via
     #   langgraph
+    #   langgraph-checkpoint-sqlite
     #   langgraph-prebuilt
+langgraph-checkpoint-sqlite==3.1.2
+    # via -r requirements-ci.in
 langgraph-prebuilt==1.1.1
     # via langgraph
 langgraph-sdk==0.4.8
@@ -99,6 +109,7 @@ pydantic==2.14.1
     # via
     #   -r requirements-ci.in
     #   fastapi
+    #   langchain
     #   langchain-core
     #   langgraph
     #   langsmith
@@ -128,6 +139,8 @@ requests-toolbelt==1.0.0
     # via langsmith
 sniffio==1.3.1
     # via langsmith
+sqlite-vec==0.1.9
+    # via langgraph-checkpoint-sqlite
 starlette==1.8.0
     # via fastapi
 tenacity==9.2.1
