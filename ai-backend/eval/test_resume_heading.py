@@ -96,13 +96,10 @@ class HeadingOnlyModel:
         elif stage == "context":
             value = {}
         elif stage == "synthesis":
-            value = {"match_status": "信息不足", "overview": "这是离线协议测试，不评价实际简历。",
-                     "sections": [{"module": key, "commentary": "仅验证标题识别与报告输出。", "evidence": []}
-                                  for key in ("experience", "project", "skill", "education", "presentation")],
-                     "actions": [{"priority": "中", "kind": "信息确认", "action": "人工检查真实报告。", "evidence": []}],
-                     "interview_questions": []}
+            value = {"overview": "这是离线协议测试，不评价实际简历。",
+                     "actions": [], "interview_questions": []}
         else:
-            value = {"overview": "仅验证协议。", "findings": []}
+            raise AssertionError(f"不应调用独立审阅节点：{stage}")
         return AIMessage(content=json.dumps(value, ensure_ascii=False))
 
     def stream(self, messages, config=None):
@@ -127,10 +124,10 @@ def check_uploaded_heading(api, monkeypatch, raw):
         "user_id": user["id"], "thread_id": "heading-thread", "user_message": "这份简历咋样啊", "emit_chunk": chunks.append}})
     assert "## 总体判断" in report and "你这次" not in report
     assert NORMAL_TITLE in report
-    assert len(chunks) > 5 and "".join(chunks) == report
+    assert len(chunks) >= 3 and "".join(chunks) == report
     snapshot = GuidanceStore().load(user["id"], "heading-thread")
     assert snapshot["status"] == "ready" and snapshot["context"]["application_type"]["value"] == "实习"
-    assert model.calls[:2] == ["extraction", "context"]
+    assert model.calls == ["extraction", "context", "synthesis"]
 
 
 def test_synthetic_pdf_heading_upload_to_guidance_without_reasking(api, monkeypatch):

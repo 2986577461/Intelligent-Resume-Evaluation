@@ -56,59 +56,45 @@ class ContextResolution(GuidanceContext):
     clear_evidence: str | None = None
 
 
-class Finding(StrictModel):
-    subject: str = Field(min_length=1)
-    evidence: list[str] = Field(min_length=1, max_length=4)
-    interpretation: str = Field(min_length=1)
-    impact: str = Field(min_length=1)
-    suggestion: str = Field(min_length=1)
-    action: Literal["保留", "突出", "压缩", "改写", "补证据", "待确认", "补实践"]
-    priority: Literal["高", "中", "低"]
-    interview_question: str | None = None
-
-
-class AnalystResult(StrictModel):
-    overview: str = Field(min_length=1)
-    findings: list[Finding] = Field(max_length=12)
-
-
-MODULE_LABELS = {"experience": "实习与工作经历", "project": "项目经历", "skill": "技术能力",
-                 "education": "教育背景", "presentation": "表达与一致性"}
-Module = Literal["experience", "project", "skill", "education", "presentation"]
-
-
-class ReviewSection(StrictModel):
-    module: Module
-    commentary: str = Field(min_length=1)
-    evidence: list[str] = Field(max_length=8)
+ActionId = Literal["A1", "A2", "A3"]
 
 
 class ActionItem(StrictModel):
+    id: ActionId
+    subject: str = Field(min_length=1)
     priority: Literal["高", "中", "低"]
     kind: Literal["表达调整", "补充证据", "能力实践", "信息确认"]
-    action: str = Field(min_length=1)
     evidence: list[str] = Field(max_length=4)
+    observation: str = Field(min_length=1, description="原文观察及问题；缺失信息明确说明未提供，不断言不会")
+    impact: str = Field(min_length=1, description="为什么影响本次投递的理解")
+    action: str = Field(min_length=1, description="用户可执行的下一步，不虚构事实")
 
 
 class InterviewQuestion(StrictModel):
+    action_id: ActionId | None = Field(description="关联建议 ID；无需修改但值得准备的问题为 null")
+    subject: str = Field(min_length=1)
     question: str = Field(min_length=1)
     evidence: list[str] = Field(min_length=1, max_length=4)
+    purpose: str = Field(min_length=1, description="为什么会问、希望澄清什么")
+    preparation: str = Field(min_length=1, description="应准备的真实过程或证据，不是编造的参考答案")
 
 
 class ReportIntroduction(StrictModel):
-    match_status: Literal["有较充分支持", "部分支持", "存在明显差距", "信息不足"]
     overview: str = Field(min_length=1)
 
 
 class Synthesis(ReportIntroduction):
-    sections: list[ReviewSection] = Field(min_length=5, max_length=5)
-    actions: list[ActionItem] = Field(min_length=1, max_length=5)
-    interview_questions: list[InterviewQuestion] = Field(max_length=6)
+    actions: list[ActionItem] = Field(max_length=3)
+    interview_questions: list[InterviewQuestion] = Field(max_length=5)
 
     @model_validator(mode="after")
-    def complete_sections(self):
-        if {section.module for section in self.sections} != set(MODULE_LABELS):
-            raise ValueError("指导模块必须完整且不重复")
+    def valid_action_references(self):
+        ids = [item.id for item in self.actions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("建议 ID 不得重复")
+        for question in self.interview_questions:
+            if question.action_id is not None and question.action_id not in ids:
+                raise ValueError("追问关联的建议不存在")
         return self
 
 

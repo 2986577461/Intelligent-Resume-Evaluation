@@ -20,17 +20,18 @@ def test_parser_handles_arbitrary_boundaries_and_escaped_content(size):
     for index in range(0, len(text), size):
         events.extend(parser.feed(text[index:index + size]))
     assert parser.finish() == data
+    assert "".join(value for key, kind, value in events if key == "overview" and kind == "delta") == data["overview"]
     assert ("overview", None, data["overview"]) in events
-    assert len([event for event in events if event[0] == "sections" and isinstance(event[1], int)]) == 5
+    assert len([event for event in events if event[0] == "actions" and isinstance(event[1], int)]) == 1
 
 
 @pytest.mark.parametrize("text", [
     '{"overview":"a","overview":"b"}',
     '{"unexpected":"value"}',
-    '{"sections":[{"module":"project","module":"skill"}]}',
+    '{"actions":[{"id":"A1","id":"A2"}]}',
     '{"overview":"a"} trailing',
     '{"overview":"unfinished',
-    '{"sections":[{"module":"project"}',
+    '{"actions":[{"id":"A1"}',
     '{"overview":"a",}',
 ])
 def test_parser_rejects_malformed_duplicate_or_incomplete_json(text):
@@ -57,14 +58,14 @@ def test_streamed_text_matches_deterministic_non_stream_rendering():
     model = ScriptedModel()
     report, chunks, _, metrics = run(model)
     expected = render_report(Report(context=CONTEXT, **SYNTHESIS))
-    assert len(chunks) > 5 and "".join(chunks) == report == expected
+    assert len(chunks) >= 5 and "".join(chunks) == report == expected
     assert metrics[-1]["outcome"] == "success"
     assert report.endswith("不代表实际能力或录用结果。\n")
 
 
-def test_missing_sections_after_first_content_marks_incomplete_without_retry():
+def test_missing_required_field_after_first_content_marks_incomplete_without_retry():
     bad = copy.deepcopy(SYNTHESIS)
-    bad["sections"] = bad["sections"][:1]
+    del bad["interview_questions"]
     model = ScriptedModel(faults={"synthesis": [bad]})
     report, chunks, _, metrics = run(model)
     assert "总体判断" in report and "报告未完成" in report
@@ -79,7 +80,7 @@ def test_network_failure_after_first_content_does_not_replay_or_leak_exception()
         def stream(self, messages, config=None):
             response = self.invoke(messages, config)
             # 首段 JSON 已完整，后面数组尚未生成，随后模拟连接中断。
-            end = response.content.index('"sections"')
+            end = response.content.index('"actions"')
             yield AIMessageChunk(content=response.content[:end])
             raise ConnectionError("PRIVATE SERVICE ERROR")
 
@@ -93,7 +94,7 @@ def test_network_failure_after_first_content_does_not_replay_or_leak_exception()
 
 
 def test_validation_failure_before_first_content_can_retry_without_leaking_json():
-    bad = {"match_status": "非法状态", **{key: value for key, value in SYNTHESIS.items() if key != "match_status"}}
+    bad = {**SYNTHESIS, "overview": ""}
     model = ScriptedModel(faults={"synthesis": [bad]})
     report, chunks, _, metrics = run(model)
     assert "报告未完成" not in report and "非法状态" not in report
@@ -104,9 +105,8 @@ def test_validation_failure_before_first_content_can_retry_without_leaking_json(
 
 def test_out_of_order_model_fields_are_buffered_until_display_order_is_ready():
     data = copy.deepcopy(SYNTHESIS)
-    data["sections"].reverse()
-    data = {"actions": data["actions"], "interview_questions": data["interview_questions"],
-            "sections": data["sections"], "overview": data["overview"], "match_status": data["match_status"]}
+    data = {"interview_questions": data["interview_questions"],
+            "actions": data["actions"], "overview": data["overview"]}
     report, chunks, _, metrics = run(ScriptedModel(faults={"synthesis": [data]}))
     assert report == render_report(Report(context=CONTEXT, **SYNTHESIS))
     assert "".join(chunks) == report and metrics[-1]["outcome"] == "success"

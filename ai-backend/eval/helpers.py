@@ -22,7 +22,9 @@ def run_eval_pipeline(graph, resume_text, position, application_type):
 
 
 def flatten_report_text(report):
-    parts = [report.overview] + [section.commentary for section in report.sections]
-    parts.extend(item.action for item in report.actions)
-    parts.extend(item.question for item in report.interview_questions)
+    parts = [report.overview]
+    for item in report.actions:
+        parts.extend([item.subject, item.observation, item.impact, item.action])
+    for item in report.interview_questions:
+        parts.extend([item.question, item.purpose, item.preparation])
     return "\n".join(parts)

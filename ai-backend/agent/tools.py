@@ -96,8 +96,10 @@ def parse_resume_by_index(config: RunnableConfig, index: int | None = None, file
 
 @tool(return_direct=True)
 def analyze_resume(config: RunnableConfig, index: int | None = None, file_id: str | None = None) -> str:
-    """先解析简历，再给出面试官视角的证据判断与修改建议，不评分。
-    用户请求分析、评价、指导、优化简历或补充上一轮投递信息时使用。
+    """解析简历，给出最多3条有依据的优先优化建议和最多5个具体面试追问，不评分。
+    用户请求完整分析、评价、优化简历或补充上一轮待确认投递信息时使用。
+    已有报告的解释、局部讨论或普通面试知识问答，不默认调用本工具重跑。
+    单纯问“校招是什么意思”等概念、取消或拒绝继续，不是补充投递信息。
     有 file_id 时直接使用；无附件且正在补充投递信息时可以省略 file_id 和 index，
     系统会恢复本会话暂存的文件。其他无附件场景先 list_resumes 获取索引。
     目标岗位、实习/校招/社招和可选 JD 从本轮原始消息识别，不要在解析前强制询问。

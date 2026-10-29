@@ -128,7 +128,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
             nonlocal tool_streamed
             tool_streamed = True
             ai_reply_chunks.append(text)
-            loop.call_soon_threadsafe(queue.put_nowait, text)
+            loop.call_soon_threadsafe(queue.put_nowait, SSE.content(text))
 
         config: RunnableConfig = {
             "configurable": {"thread_id": thread_id, "user_id": user_id, "file_id": file_id,
@@ -185,7 +185,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         ai_reply_chunks.append(chunk.content)
                         if hasattr(chunk, 'response_metadata') and chunk.response_metadata.get('token_usage'):
                             _last_meta = chunk.response_metadata
-                        loop.call_soon_threadsafe(queue.put_nowait, chunk.content)
+                        loop.call_soon_threadsafe(queue.put_nowait, SSE.content(chunk.content))
                 # tool调用完毕
                 elif isinstance(chunk, ToolMessage):
                     tool_info = SSE.match_tool(current_tool_name)
@@ -215,7 +215,7 @@ async def stream_chat(question: str, thread_id: str, user_id: str = "",
                         if _saved_tool_name in direct_tool_names and not tool_streamed:
                             content = str(chunk.content)
                             ai_reply_chunks.append(content)
-                            loop.call_soon_threadsafe(queue.put_nowait, content)
+                            loop.call_soon_threadsafe(queue.put_nowait, SSE.content(content))
                     continue
         except Exception as e:
             error_msg = str(e)

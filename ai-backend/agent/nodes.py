@@ -1,4 +1,4 @@
-"""事实提取、投递上下文识别、证据审阅和确定性渲染。"""
+"""事实提取、投递上下文识别、单次综合指导和确定性渲染。"""
 
 import json
 import os
@@ -10,8 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agent.report_stream import (INTERRUPTED, ReportJSONStream, ReportStreamInterrupted,
                                  ReportStreamRenderer, render_report)
 from agent.resume_context import normalize_text, resume_target_hints
-from agent.schema import (AnalystResult, ContextResolution, ContextSignal, Extraction,
-                          GuidanceContext, Report, Synthesis)
+from agent.schema import ContextResolution, ContextSignal, Extraction, GuidanceContext, Report, Synthesis
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -24,7 +23,7 @@ def _load_prompt(name):
 def _call_llm(prompt, text, model, trace=None, stage="internal"):
     response = model.invoke(
         [SystemMessage(content=prompt), HumanMessage(content=text)],
-        config={"callbacks": [], "run_name": f"resume_{stage}", "tags": ["multi_agent_internal"]},
+        config={"callbacks": [], "run_name": f"resume_{stage}", "tags": ["resume_guidance_internal"]},
     )
     if trace:
         trace.usage(stage, response)
@@ -119,37 +118,11 @@ def _review_input(state):
     }
 
 
-def _analyst(state, model, key, trace=None):
-    payload = _review_input(state)
-    if key == "skill":
-        payload.update(project_result=state["project_result"], experience_result=state["experience_result"])
-    result = _structured_call(f"{key}_analyst.md", payload, AnalystResult, model, trace, key)
-    _validate_evidence(result.findings, state["resume_text"])
-    return {f"{key}_result": result.model_dump()}
-
-
-def skill_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "skill", trace)
-
-
-def project_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "project", trace)
-
-
-def experience_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "experience", trace)
-
-
-def education_analyst_node(state, model, trace=None):
-    return _analyst(state, model, "education", trace)
-
-
 def synthesis_node(state, model, trace=None, emit_chunk=None):
     payload = _review_input(state)
-    payload["reviews"] = {key: state[f"{key}_result"] for key in ("project", "experience", "skill", "education")}
     if emit_chunk is None:
         result = _structured_call("report_generator.md", payload, Synthesis, model, trace, "synthesis")
-        _validate_evidence([*result.sections, *result.actions, *result.interview_questions], state["resume_text"])
+        _validate_evidence([*result.actions, *result.interview_questions], state["resume_text"])
         return {"synthesis": result.model_dump()}
 
     parser = ReportJSONStream()
@@ -161,7 +134,7 @@ def synthesis_node(state, model, trace=None, emit_chunk=None):
     try:
         with closing(model.stream(
             [SystemMessage(content=prompt), HumanMessage(content=json.dumps(payload, ensure_ascii=False))],
-            config={"callbacks": [], "run_name": "resume_synthesis", "tags": ["multi_agent_internal"]},
+            config={"callbacks": [], "run_name": "resume_synthesis", "tags": ["resume_guidance_internal"]},
         )) as chunks:
             for chunk in chunks:
                 response = chunk if response is None else response + chunk

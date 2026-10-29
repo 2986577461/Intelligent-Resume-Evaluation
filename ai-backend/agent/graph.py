@@ -1,13 +1,11 @@
-"""LangGraph 简历指导：先解析，按需追问，项目与经历共同支持技能核验。"""
+"""对话式简历指导：提取、目标确认、单次综合分析与确定性渲染。"""
 
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
 
-from agent.nodes import (context_node, education_analyst_node, experience_analyst_node,
-                         project_analyst_node, report_generator_node, resume_analyst_node,
-                         skill_analyst_node, synthesis_node)
+from agent.nodes import context_node, report_generator_node, resume_analyst_node, synthesis_node
 from agent.schema import GuidanceContext
 
 
@@ -22,10 +20,6 @@ class EvalState(TypedDict, total=False):
     experiences: list
     projects: list
     page_count: int
-    skill_result: dict
-    project_result: dict
-    experience_result: dict
-    education_result: dict
     synthesis: dict
     streamed_report: str
     report: str
@@ -47,26 +41,14 @@ _LLM_RETRY_POLICY = RetryPolicy(max_attempts=2, retry_on=_retryable)
 def _build(model, emit_state, emit_chunk, trace, include_extraction, include_context):
     builder = StateGraph(EvalState)
 
-    def wrap(name, fn, completed=None):
+    def wrap(name, fn):
         def run(state):
-            result = trace.run(name, lambda: fn(state)) if trace else fn(state)
-            if completed and emit_state:
-                emit_state(completed)
-            return result
+            return trace.run(name, lambda: fn(state)) if trace else fn(state)
         return run
-
-    for name, fn, message in (
-        ("project", project_analyst_node, "项目证据审阅完成"),
-        ("experience", experience_analyst_node, "经历证据审阅完成"),
-        ("education", education_analyst_node, "教育背景核对完成"),
-        ("skill", skill_analyst_node, "技能关联核验完成"),
-    ):
-        builder.add_node(name, wrap(name, lambda s, fn=fn: fn(s, model, trace), message),
-                         retry_policy=_LLM_RETRY_POLICY)
 
     def synthesize(state):
         if emit_state:
-            emit_state("跨模块复核与指导生成中")
+            emit_state("优化建议与面试追问生成中")
         return synthesis_node(state, model, trace, emit_chunk=emit_chunk)
 
     builder.add_node("synthesis", wrap("synthesis", synthesize), retry_policy=_LLM_RETRY_POLICY)
@@ -75,20 +57,16 @@ def _build(model, emit_state, emit_chunk, trace, include_extraction, include_con
     if include_extraction:
         builder.add_node("extraction", wrap("extraction", lambda s: resume_analyst_node(s, model, emit_state, trace)),
                          retry_policy=_LLM_RETRY_POLICY)
-        builder.add_edge(START, "extraction")
+        builder.add_edge(entry, "extraction")
         entry = "extraction"
     if include_context:
         builder.add_node("context", wrap("context", lambda s: context_node(s, model, trace)),
                          retry_policy=_LLM_RETRY_POLICY)
         builder.add_edge(entry, "context")
         builder.add_conditional_edges("context", lambda s: "wait" if GuidanceContext.model_validate(
-            s["context"]).missing_fields() else "review", {"wait": END, "review": "review_start"})
-        builder.add_node("review_start", lambda s: {})
-        entry = "review_start"
-    for branch in ("project", "experience", "education"):
-        builder.add_edge(entry, branch)
-    builder.add_edge(["project", "experience"], "skill")
-    builder.add_edge(["skill", "education"], "synthesis")
+            s["context"]).missing_fields() else "analyze", {"wait": END, "analyze": "synthesis"})
+    else:
+        builder.add_edge(entry, "synthesis")
     builder.add_edge("synthesis", "report")
     builder.add_edge("report", END)
     return builder.compile()
@@ -99,7 +77,7 @@ def build_eval_graph(model, emit_state=None, emit_chunk=None, trace=None):
 
 
 def build_scoring_graph(model, emit_state=None, emit_chunk=None, trace=None):
-    """保留 Python 入口名供既有工具使用，内部已不算分。输入须有完整 context。"""
+    """保留既有 Python 入口名。输入须有完整 context，内部只调用一次综合分析。"""
     return _build(model, emit_state, emit_chunk, trace, include_extraction=False, include_context=False)
 
 

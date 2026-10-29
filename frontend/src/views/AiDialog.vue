@@ -303,7 +303,7 @@
                   @keydown.enter.exact.prevent="handleEnter"
                   @keydown.alt.enter.prevent="insertNewline"
                   @paste="onPaste"
-                  placeholder="Write a message..."
+                  placeholder="上传简历获取修改建议，或追问如何准备面试…"
                   :disabled="loading"
                   rows="1"
                   @input="autoResize"
@@ -422,33 +422,13 @@ let es = null;
 let _uploadPromise = null;
 let _uploadToken = 0;
 
-let _statusQueue = [];
-let _statusTimer = null;
-function _runStatusQueue(msg) {
-  if (_statusTimer) return;
-  const dequeue = () => {
-    if (_statusQueue.length > 0) {
-      msg.toolStatus = _statusQueue.shift() || "";
-      _statusTimer = setTimeout(dequeue, 500);
-    } else {
-      _statusTimer = null;
-    }
-  };
-  dequeue();
-}
 function _setStatus(text, msg) {
-  // “✓ ... completed”这类完成徽章需要在正文开始输出后仍然保留，
-  // 和刷新页面后 _buildMsg 从 search_info.tools 里恢复出的永久徽章行为保持一致
+  // 状态如实反映最新服务端事件，不人为按 500ms 排队播放旧阶段。
+  msg.toolStatus = text || "";
   msg.toolDone = !!(text && text.startsWith("✓"));
-  _statusQueue.push(text);
-  _runStatusQueue(msg);
 }
-// 清空状态也走队列，保证排在前面的“完成”提示至少展示一轮再消失；
-// 但如果最后一条状态已经是完成徽章，正文 chunk 到达时不再清空它
 function _clearStatus(msg) {
-  if (msg.toolDone) return;
-  _statusQueue.push(null);
-  _runStatusQueue(msg);
+  if (!msg.toolDone) msg.toolStatus = "";
 }
 
 function _buildMsg(role, content, searchInfo, file) {
@@ -741,13 +721,6 @@ async function send() {
   loading.value = true;
   nextTick(() => scrollBottom());
 
-  // 每次新消息重置状态队列，避免上一轮残留干扰
-  if (_statusTimer) {
-    clearTimeout(_statusTimer);
-    _statusTimer = null;
-  }
-  _statusQueue = [];
-
   const aiIdx = messages.value.length;
   messages.value.push(
     reactive({
@@ -789,7 +762,7 @@ async function send() {
     } else if (e.data.startsWith("[ERROR]")) {
       evtSource.close();
       es = null;
-      msg.text = "出错：" + e.data.replace("[ERROR] ", "");
+      msg.text += "\n\n> 输出中断：" + e.data.replace("[ERROR] ", "");
       msg.streaming = false;
       loading.value = false;
     } else if (e.data.startsWith("[STATE]")) {
@@ -802,9 +775,8 @@ async function send() {
         } else if (state.state === "Analyzing") {
           _setStatus("正在生成简历指导...", msg);
         } else if (
-          ["提取简历信息中", "识别投递目标中", "简历证据审阅中", "已复用简历提取结果",
-            "项目证据审阅完成", "经历证据审阅完成", "教育背景核对完成", "技能关联核验完成",
-            "跨模块复核与指导生成中"].includes(state.state)
+          ["提取简历信息中", "识别投递目标中", "已复用简历提取结果",
+            "优化建议与面试追问生成中"].includes(state.state)
         ) {
           _setStatus(state.state + "...", msg);
         } else if (state.state === "指导报告生成中") {
@@ -825,7 +797,10 @@ async function send() {
     } else {
       _clearStatus(msg);
       msg.searching = false;
-      const t = e.data.replace(/\\n/g, "\n");
+      // [TEXT] 的 JSON 字符串无损保留换行、反斜杠及模型 token 的任意边界。
+      const t = e.data.startsWith("[TEXT]")
+        ? JSON.parse(e.data.slice(6))
+        : e.data.replace(/\\n/g, "\n"); // 兼容滚动升级时的旧服务端
       msg.text += t;
       nextTick(() => scrollBottom());
     }

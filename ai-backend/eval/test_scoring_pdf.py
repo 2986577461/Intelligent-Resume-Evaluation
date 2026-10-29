@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from eval.test_auth import api, signup
-from eval.test_offline_pipeline import (CONTEXT, EXTRACTION, RESUME, REVIEW, SYNTHESIS,
+from eval.test_offline_pipeline import (CONTEXT, EXTRACTION, RESUME, SYNTHESIS,
                                        MemoryCache, ScriptedModel, signal)
 
 
@@ -55,7 +55,7 @@ def test_pdf_upload_tool_state_cache_and_file_access(api, monkeypatch):
     config = {"configurable": {"user_id": user, "thread_id": "pdf-thread",
                                "emit_chunk": chunks.append, "record_metric": metrics.append}}
     report = analyze_resume.invoke({"file_id": file_id}, config=config)
-    assert "".join(chunks) == report and len(chunks) > 5 and "总体判断" in report and "总分" not in report
+    assert "".join(chunks) == report and len(chunks) >= 5 and "总体判断" in report and "总分" not in report
     chunks.clear()
     assert "优先修改清单" in analyze_resume.invoke({"file_id": file_id}, config=config)
     assert sum(name == "extraction" for name, _ in model.calls) == 1
@@ -138,17 +138,14 @@ def test_pdf_real_sdk_json_mode_timeout_and_retry(api, monkeypatch, transient):
         prompt = body["messages"][0]["content"]
         stage = next((key for key, word in {
             "extraction": "简历事实提取员", "context": "识别本轮投递上下文",
-            "skill": "岗位需要什么—技能声称什么", "project": "负责审阅项目证据",
-            "experience": "负责审阅实习与工作证据", "education": "负责核对教育背景",
             "synthesis": "生成面向投递者的简历指导",
         }.items() if word in prompt), None)
         assert stage is not None
         requests.append(stage)
-        if transient and stage == "project" and not fault_sent:
+        if transient and stage == "synthesis" and not fault_sent:
             fault_sent = True
             return httpx.Response(429, json={"error": {"message": "synthetic rate limit", "type": "rate_limit"}})
-        value = (EXTRACTION if stage == "extraction" else CONTEXT if stage == "context" else
-                 SYNTHESIS if stage == "synthesis" else REVIEW)
+        value = EXTRACTION if stage == "extraction" else CONTEXT if stage == "context" else SYNTHESIS
         if stage == "synthesis":
             assert body["stream"] is True
             text = json.dumps(value, ensure_ascii=False)
@@ -181,7 +178,5 @@ def test_pdf_real_sdk_json_mode_timeout_and_retry(api, monkeypatch, transient):
             "user_id": user, "thread_id": "pdf-thread", "record_metric": metrics.append,
         }})
     assert "## 总体判断" in report
-    assert len(requests) == (8 if transient else 7)
-    assert requests.index("skill") > max(i for i, name in enumerate(requests) if name in {"project", "experience"})
-    assert requests[-1] == "synthesis"
+    assert requests == ["extraction", "context", "synthesis"] + (["synthesis"] if transient else [])
     assert max(m.get("attempt", 0) for m in metrics) == (2 if transient else 1)

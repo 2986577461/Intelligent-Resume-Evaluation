@@ -35,28 +35,22 @@ def signal(value, evidence, source="resume", inferred=False):
 CONTEXT = {"position": signal("后端开发", "后端开发实习生"),
            "application_type": signal("实习", "后端开发实习生"), "job_description": None}
 FINDING = {
-    "subject": "示例检索项目", "evidence": ["示例检索项目使用 Python 和 Redis"],
-    "interpretation": "原文提供了 Python 与 Redis 的实现线索。", "impact": "为后端方向提供部分证据。",
-    "suggestion": "补充检索接口的真实验证方法，不虚构数据。", "action": "补证据", "priority": "高",
-    "interview_question": "示例检索项目如何验证检索接口？",
+    "id": "A1", "subject": "示例检索项目", "priority": "高", "kind": "补充证据",
+    "evidence": ["使用合成数据验证"],
+    "observation": "已有验证方式，但未说明合成数据覆盖哪些检索场景。",
+    "impact": "影响对后端接口验证深度的理解，不代表没有验证。",
+    "action": "如实际做过，补充合成数据覆盖的场景和判断结果的方法，不编数字。",
 }
-REVIEW = {"overview": "已有实现线索，进一步核对验证方法。", "findings": [FINDING]}
 SYNTHESIS = {
-    "match_status": "部分支持", "overview": "示例检索项目提供了后端实现线索，尚不能确认具体企业门槛。",
-    "sections": [
-        {"module": "experience", "commentary": "简历未提供实习经历，不等于从未实习。", "evidence": []},
-        {"module": "project", "commentary": "示例检索项目体现 Python 和 Redis 的使用，可补充验证方法。",
-         "evidence": ["示例检索项目使用 Python 和 Redis"]},
-        {"module": "skill", "commentary": "Spring Boot 目前缺少关联证据，可按目标岗位调整篇幅。",
-         "evidence": ["技能：Python、Redis、Spring Boot。"]},
-        {"module": "education", "commentary": "本科记录覆盖约两年，不能直接认定学制或升学路径。",
-         "evidence": ["示例大学 本科 2024.09-2026.06"]},
-        {"module": "presentation", "commentary": "可优先突出检索接口的个人工作，不凭页数判断视觉版式。",
-         "evidence": ["负责检索接口"]},
-    ],
-    "actions": [{"priority": "高", "kind": "补充证据", "action": "补充示例检索项目已有的验证方法。",
-                 "evidence": ["使用合成数据验证"]}],
-    "interview_questions": [{"question": "示例检索项目为什么使用 Redis，如何验证？", "evidence": ["示例检索项目使用 Python 和 Redis"]}],
+    "overview": "示例检索项目提供了后端实现线索，可进一步解释已写出的验证方法；不判断实际能力或企业门槛。",
+    "actions": [FINDING],
+    "interview_questions": [{
+        "action_id": "A1", "subject": "示例检索项目",
+        "question": "示例检索项目的合成数据覆盖哪些情况，怎样判断检索接口正确？",
+        "evidence": ["示例检索项目使用 Python 和 Redis", "使用合成数据验证"],
+        "purpose": "澄清接口验证方法与个人工作。",
+        "preparation": "回顾实际样例、预期结果与失败案例，不补造测试记录。",
+    }],
 }
 DATA = {"file_id": "file-a", "text": RESUME, "page_count": 2}
 
@@ -85,13 +79,12 @@ class MemoryStore:
 
 
 class ScriptedModel:
-    def __init__(self, extraction=None, faults=None, parallel=False, contexts=None):
+    def __init__(self, extraction=None, faults=None, contexts=None):
         self.extraction = copy.deepcopy(EXTRACTION if extraction is None else extraction)
         self.faults = copy.deepcopy(faults or {})
         self.contexts = copy.deepcopy(contexts or [])
         self.calls, self.finished = [], []
         self.lock = threading.Lock()
-        self.barrier = threading.Barrier(3) if parallel else None
 
     def invoke(self, messages, config=None):
         stage = config["run_name"].removeprefix("resume_")
@@ -102,8 +95,6 @@ class ScriptedModel:
             value = faults.pop(0) if faults else None
             if value is None and stage == "context":
                 value = self.contexts.pop(0) if self.contexts else CONTEXT
-        if self.barrier and stage in ("project", "experience", "education"):
-            self.barrier.wait(timeout=5)
         if isinstance(value, Exception):
             raise value
         if value is None:
@@ -113,17 +104,10 @@ class ScriptedModel:
                 from datetime import date
                 assert payload["resume_text"].strip()
                 assert payload["evaluation_date"] == date.today().isoformat()
-                if stage == "synthesis":
-                    assert set(self.finished) >= {"project", "skill", "experience", "education"}
-                    assert set(payload["reviews"]) == {"project", "skill", "experience", "education"}
-                    value = SYNTHESIS
-                else:
-                    if stage == "skill":
-                        assert {"project", "experience"} <= set(self.finished)
-                        assert payload["facts"]["projects"] == self.extraction["projects"]
-                        assert payload["project_result"]["findings"]
-                        assert "experience_result" in payload
-                    value = REVIEW
+                assert stage == "synthesis", f"不应调用独立审阅节点：{stage}"
+                assert "reviews" not in payload
+                assert payload["facts"]["projects"] == self.extraction["projects"]
+                value = SYNTHESIS
         with self.lock:
             self.finished.append(stage)
         return AIMessage(content=value if isinstance(value, str) else json.dumps(value, ensure_ascii=False),
@@ -150,19 +134,18 @@ def run(model=None, cache=None, data=None, store=None, user_message=""):
     return report, chunks, states, metrics
 
 
-def test_graph_dependencies_parallelism_and_contract():
-    model = ScriptedModel(parallel=True)
+def test_graph_runs_one_analysis_after_extraction_and_context():
+    model = ScriptedModel()
     chunks = []
     result = build_eval_graph(model, emit_chunk=chunks.append).invoke({"resume_text": RESUME, "page_count": 2})
     report = Report.model_validate(result["report_data"])
-    assert report.match_status == "部分支持"
-    assert len(report.sections) == 5
-    assert len(chunks) > 5 and "".join(chunks) == result["report"]
+    assert len(report.actions) == 1 and len(report.interview_questions) == 1
+    assert report.interview_questions[0].action_id == report.actions[0].id
+    assert len(chunks) >= 5 and "".join(chunks) == result["report"]
     assert "总分" not in result["report"] and "## 优先修改清单" in result["report"]
     assert "本次按目标岗位分析" in result["report"]
     assert "未提供具体 JD" not in result["report"]
-    assert Counter(name for name, _ in model.calls) == Counter({
-        "extraction": 1, "context": 1, "project": 1, "skill": 1, "experience": 1, "education": 1, "synthesis": 1})
+    assert [name for name, _ in model.calls] == ["extraction", "context", "synthesis"]
 
 
 def test_graph_stops_before_review_when_context_is_missing():
@@ -177,7 +160,7 @@ def test_first_content_precedes_synthesis_completion_and_metrics_are_safe():
     report = evaluate_resume(DATA, "alice", "thread", model,
                              emit_chunk=lambda text: times.append((time.perf_counter(), set(model.finished))),
                              trace=EvaluationTrace(metrics.append))
-    assert len(times) > 5 and "synthesis" not in times[0][1]
+    assert len(times) >= 5 and "synthesis" not in times[0][1]
     assert "## 面试官可能继续追问" in report
     assert sum(m["event"] == "first_content" for m in metrics) == 1
     assert metrics[-1]["outcome"] == "success"
@@ -188,7 +171,7 @@ def test_first_content_precedes_synthesis_completion_and_metrics_are_safe():
 
 def test_complete_guidance_returned_without_stream_callback():
     report = evaluate_resume(DATA, "alice", "thread", ScriptedModel())
-    for title in ("总体判断", "实习与工作经历", "项目经历", "技术能力", "教育背景", "表达与一致性", "优先修改清单"):
+    for title in ("总体判断", "优先修改清单", "面试官可能继续追问"):
         assert report.count(f"## {title}") == 1
     for forbidden in ("总分", "得分", "评分表", "建议缩减到1页"):
         assert forbidden not in report
@@ -357,13 +340,12 @@ def test_cache_failure_does_not_block_guidance(operation):
 
 
 def test_only_failed_node_retries_and_output_is_not_duplicated():
-    model = ScriptedModel(faults={"project": ["not json"], "synthesis": [TimeoutError("temporary")]})
+    model = ScriptedModel(faults={"synthesis": [TimeoutError("temporary")]})
     report, chunks, _, metrics = run(model)
     counts = Counter(stage for stage, _ in model.calls)
-    assert counts["project"] == counts["synthesis"] == 2
-    assert counts["extraction"] == counts["skill"] == counts["education"] == 1
+    assert counts == Counter({"extraction": 1, "context": 1, "synthesis": 2})
     assert "".join(chunks) == report and report.count("## 总体判断") == 1
-    assert any(m.get("node") == "project" and m.get("attempt") == 2 for m in metrics)
+    assert any(m.get("node") == "synthesis" and m.get("attempt") == 2 for m in metrics)
 
 
 def test_extraction_failure_never_reviews_or_caches_raw_output():
@@ -392,14 +374,11 @@ def test_synthesis_failure_does_not_emit_partial_analysis():
     assert not any(m["event"] == "first_content" for m in metrics)
 
 
-@pytest.mark.parametrize("stage", ["project", "synthesis", "context"])
+@pytest.mark.parametrize("stage", ["synthesis", "context"])
 def test_invented_evidence_is_rejected(stage):
-    if stage == "project":
-        bad = copy.deepcopy(REVIEW)
-        bad["findings"][0]["evidence"] = ["不存在的千万用户与性能指标"]
-    elif stage == "synthesis":
+    if stage == "synthesis":
         bad = copy.deepcopy(SYNTHESIS)
-        bad["sections"][0]["evidence"] = ["不存在的公司"]
+        bad["actions"][0]["evidence"] = ["不存在的公司"]
     else:
         bad = {**CONTEXT, "position": signal("算法", "并未提供的目标", "user")}
     report, chunks, _, _ = run(ScriptedModel(faults={stage: [bad, bad]}))
@@ -411,10 +390,12 @@ def test_invented_evidence_is_rejected(stage):
 
 
 def test_whitespace_only_evidence_is_rejected():
-    bad = copy.deepcopy(REVIEW)
-    bad["findings"][0]["evidence"] = ["  "]
-    report, chunks, _, _ = run(ScriptedModel(faults={"project": [bad, bad]}))
-    assert "失败" in report and not chunks
+    bad = copy.deepcopy(SYNTHESIS)
+    bad["actions"][0]["evidence"] = ["  "]
+    report, chunks, _, metrics = run(ScriptedModel(faults={"synthesis": [bad]}))
+    assert "报告未完成" in report and "".join(chunks) == report
+    assert metrics[-1]["outcome"] == "incomplete"
+    assert "观察与问题" not in report
 
 
 @pytest.mark.parametrize("content", ["invalid", "[]", "null", '"text"'])
@@ -429,14 +410,14 @@ def test_call_llm_parses_fences(fence):
     assert _call_llm("prompt", "text", FakeListChatModel(responses=[f"```{fence}\n{value}\n``` "]))["overview"] == "test"
 
 
-def test_schema_rejects_scores_and_incomplete_sections():
+def test_schema_rejects_scores_and_invalid_action_links():
     assert Extraction.model_validate({**EXTRACTION, "projects": None}).projects == []
     with pytest.raises(ValueError):
         Extraction.model_validate({"position": None})
     with pytest.raises(ValueError):
         Report.model_validate({**SYNTHESIS, "context": CONTEXT, "overall_score": 90})
     bad = copy.deepcopy(SYNTHESIS)
-    bad["sections"][0]["module"] = "project"
+    bad["interview_questions"][0]["action_id"] = "A3"
     with pytest.raises(ValueError):
         Report.model_validate({**bad, "context": CONTEXT})
     with pytest.raises(ValueError):

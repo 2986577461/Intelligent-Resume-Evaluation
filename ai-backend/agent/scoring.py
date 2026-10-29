@@ -109,8 +109,6 @@ def evaluate_resume(data, user_id, thread_id, model, cache=None, *, user_message
 
         state = {**extraction, "page_count": data["page_count"], "resume_text": data["text"],
                  "context": context.model_dump()}
-        if emit_state:
-            emit_state("简历证据审阅中")
         result = build_scoring_graph(model, emit_state, output, trace).invoke(state)
         trace.finish("success")
         return result["report"]
